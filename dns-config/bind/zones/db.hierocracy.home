@@ -1,0 +1,21 @@
+$TTL    604800
+@       IN      SOA     diakonia.hierocracy.home. admin.hierocracy.home. (
+                              2024111201 
+                              604800    
+                              86400    
+                              2419200 
+                              604800 
+)
+
+; Name servers
+@       IN      NS      diakonia.hierocracy.home.
+
+; A records for 192.168.1.x network
+hegemon         IN      A       192.168.1.100
+hierophant      IN      A       192.168.1.101
+diakonia        IN      A       192.168.1.210
+
+; A records for 192.16.192.x network
+hegemon-alt     IN      A       192.16.192.100
+hierophant-alt  IN      A       192.16.192.101
+diakonia-alt    IN      A       192.16.192.210

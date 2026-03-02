@@ -1,0 +1,28 @@
+$TTL    604800
+@       IN      SOA     diakonia.hierocracy.home. admin.hierocracy.home. (
+                              2026021601 ; Serial
+                              604800     ; Refresh
+                              86400      ; Retry
+                              2419200    ; Expire
+                              604800 )   ; Negative Cache TTL
+
+; Name servers
+@       IN      NS      diakonia.hierocracy.home.
+
+; A records for 192.168.1.x network
+hegemon         IN      A       192.168.1.100
+hierophant      IN      A       192.168.1.101
+diakonia        IN      A       192.168.1.210
+
+; A records for 172.20.0.0 network (load balancer k8s)
+traefik         IN      A       172.20.1.16
+grafana.rag     IN      A       172.20.1.16
+ollama          IN      A       172.20.1.17
+ollama-code     IN      A       172.20.1.18
+timescaledb     IN      A       172.20.1.19
+pulsar-proxy    IN      A       172.20.1.20
+pulsar-manager  IN      A       172.20.1.21
+qdrant          IN      A       172.20.1.22
+rag-web-ui      IN      A       172.20.1.23
+registry        IN      A       172.20.1.26
+                                

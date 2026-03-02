@@ -1,0 +1,12 @@
+[
+  {
+  "op": "add",
+  "path": "/machine/network/interfaces",
+  "value": [
+    {
+      "interface": "eth1",
+      "addresses": ["172.20.0.120/16"]
+    }
+  ]
+}
+]

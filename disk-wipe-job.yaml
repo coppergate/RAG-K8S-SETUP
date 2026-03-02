@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: disk-wipe-worker-2
+  namespace: rook-ceph
+spec:
+  template:
+    spec:
+      nodeName: worker-2
+      containers:
+      - name: wiper
+        image: alpine
+        securityContext:
+          privileged: true
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          apk add util-linux;
+          echo "Wiping /dev/vdb on worker-2...";
+          wipefs -a /dev/vdb;
+          dd if=/dev/zero of=/dev/vdb bs=1M count=100;
+          echo "Wipe complete.";
+      restartPolicy: Never
+  backoffLimit: 0

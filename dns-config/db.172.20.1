@@ -1,0 +1,21 @@
+$TTL    604800
+@       IN      SOA     diakonia.hierocracy.home. admin.hierocracy.home. (
+                              2026021601 ; Serial
+                              604800     ; Refresh
+                              86400      ; Retry
+                              2419200    ; Expire
+                              604800 )   ; Negative Cache TTL
+
+; Name servers
+@       IN      NS      diakonia.hierocracy.home.
+
+; PTR records
+16     IN      PTR     traefik.hierocracy.home.
+17     IN      PTR     ollama.hierocracy.home.
+18     IN      PTR     ollama-code.hierocracy.home.
+19     IN      PTR     timescaledb.hierocracy.home.
+20     IN      PTR     pulsar-proxy.hierocracy.home.
+21     IN      PTR     pulsar-manager.hierocracy.home.
+22     IN      PTR     qdrant.hierocracy.home.
+23     IN      PTR     rag-web-ui.hierocracy.home.
+26     IN      PTR     registry.hierocracy.home.

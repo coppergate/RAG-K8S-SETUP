@@ -1,0 +1,177 @@
+#!/bin/bash
+
+# ==============================================================================
+# CLUSTER STARTUP SCRIPT
+# MUST be executed on 'hierophant'
+# ==============================================================================
+
+# Ensure we have kubectl and kubeconfig
+KUBECTL="/home/k8s/kube/kubectl"
+export KUBECONFIG="/home/k8s/kube/config/kubeconfig"
+if [ ! -f "$KUBECTL" ]; then
+    echo "Error: $KUBECTL not found."
+    exit 1
+fi
+
+ROOK_NS="rook-ceph"
+
+REPLICA_FILE="cluster-replicas.state"
+
+# 1. Start all VMs
+echo "Step 1: Starting all cluster VMs..."
+
+# Ensure GPUs are detached from host before starting inference nodes
+echo "Ensuring GPUs are detached from host..."
+sudo virsh nodedev-detach pci_0000_04_00_0 2>/dev/null || true
+sudo virsh nodedev-detach pci_0000_84_00_0 2>/dev/null || true
+
+VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2" "worker-3" "inference-0" "inference-1")
+for vm in "${VMS[@]}"; do
+    if sudo virsh dominfo "$vm" &>/dev/null; then
+        if sudo virsh list --name | grep -q "^$vm$"; then
+            echo "  $vm is already running."
+        else
+            echo "  Starting VM: $vm"
+            sudo virsh start "$vm"
+        fi
+    fi
+done
+
+echo "Waiting for Kubernetes API to be available..."
+MAX_API_WAIT=300
+API_ELAPSED=0
+until $KUBECTL get nodes &>/dev/null || [ $API_ELAPSED -ge $MAX_API_WAIT ]; do
+    echo -n "."
+    sleep 5
+    API_ELAPSED=$((API_ELAPSED + 5))
+done
+
+if [ $API_ELAPSED -ge $MAX_API_WAIT ]; then
+    echo "Error: Kubernetes API did not become available after $MAX_API_WAIT seconds."
+    exit 1
+fi
+echo " API is up."
+
+# Wait for nodes to be Ready
+echo "Waiting for nodes to be Ready..."
+until [ $($KUBECTL get nodes | grep -c " Ready") -ge 3 ]; do
+    echo -n "."
+    sleep 5
+done
+echo " At least 3 nodes are Ready."
+
+# 2. Uncordon nodes
+echo "Step 2: Uncordoning nodes..."
+NODES=$($KUBECTL get nodes -o name)
+for node in $NODES; do
+    echo "Uncordoning $node..."
+    $KUBECTL uncordon "$node"
+done
+
+# 3. Restore original scale values
+echo "Step 3: Restoring original scale values..."
+if [ -f "$REPLICA_FILE" ]; then
+    # Order of restoration: 
+    # For Rook-Ceph: mon -> osd -> others
+    # Then everything else
+    
+    # 3a. Rook Mons
+    echo "Restoring Rook Mons..."
+    grep "$ROOK_NS" "$REPLICA_FILE" | grep "mon" | while read -r ns res count; do
+        echo "Restoring $res in $ns to $count..."
+        $KUBECTL scale "$res" -n "$ns" --replicas="$count"
+    done
+    
+    # Wait for Mons to be available
+    echo "Waiting for Mons to be ready..."
+    sleep 30
+    
+    # 3b. Rook OSDs
+    echo "Restoring Rook OSDs..."
+    grep "$ROOK_NS" "$REPLICA_FILE" | grep "osd" | while read -r ns res count; do
+        echo "Restoring $res in $ns to $count..."
+        $KUBECTL scale "$res" -n "$ns" --replicas="$count"
+    done
+    
+    echo "Waiting for OSDs to initialize..."
+    sleep 60
+    
+    # 3c. Unset ceph maintenance flags
+    echo "Step 3c: Unsetting ceph maintenance flags..."
+    # Try to find a toolbox pod or any rook pod that can run ceph commands
+    TOOLBOX_POD=$($KUBECTL -n "$ROOK_NS" get pod -l app=rook-ceph-tools -o name | head -n 1)
+    
+# Function to run ceph command (prefer kubectl rook-ceph plugin)
+run_ceph_cmd() {
+    local cmd=$1
+    # 1. Prefer user-installed krew plugin if available (check common locations)
+    local WJONES_PLUGIN="/home/wjones/.krew/bin/kubectl-rook_ceph"
+    
+    if $KUBECTL rook-ceph --help >/dev/null 2>&1; then
+        $KUBECTL rook-ceph ceph -n "$ROOK_NS" $cmd
+        return $?
+    elif [ -x "$WJONES_PLUGIN" ] && [ "$(/usr/bin/id -u)" -eq 0 ]; then
+        # If we are root and have the plugin path, try using it via kubectl
+        $KUBECTL rook-ceph ceph -n "$ROOK_NS" $cmd --plugin-path="/home/wjones/.krew/bin"
+        return $?
+    fi
+
+    # 2. Fallback to exec into toolbox pod
+    local TOOLBOX_POD=$($KUBECTL -n "$ROOK_NS" get pod -l app=rook-ceph-tools -o name | head -n 1)
+    if [ -n "$TOOLBOX_POD" ]; then
+        $KUBECTL -n "$ROOK_NS" exec "$TOOLBOX_POD" -- ceph --conf /etc/ceph/ceph.conf $cmd
+        return $?
+    fi
+
+    # 3. Fallback to exec into operator pod
+    local op_pod=$($KUBECTL -n "$ROOK_NS" get pod -l app=rook-ceph-operator -o name | head -n 1)
+    if [ -n "$op_pod" ]; then
+        # The operator pod needs a specific config path and container
+        $KUBECTL -n "$ROOK_NS" exec "$op_pod" -c rook-ceph-operator -- ceph --conf /var/lib/rook/rook-ceph/rook-ceph.config $cmd 2>/dev/null || \
+        $KUBECTL -n "$ROOK_NS" exec "$op_pod" -c rook-ceph-operator -- ceph $cmd
+        return $?
+    fi
+    return 1
+}
+
+    # Wait for Operator pod to be available
+    echo "Waiting for Rook Operator to be ready..."
+    $KUBECTL wait --for=condition=ready pod -l app=rook-ceph-operator -n "$ROOK_NS" --timeout=120s 2>/dev/null
+    
+    echo "Waiting for Ceph health to become available..."
+    MAX_HEALTH_WAIT=120
+    HEALTH_ELAPSED=0
+    until run_ceph_cmd "health" &>/dev/null || [ $HEALTH_ELAPSED -ge $MAX_HEALTH_WAIT ]; do
+        echo -n "."
+        sleep 5
+        HEALTH_ELAPSED=$((HEALTH_ELAPSED + 5))
+    done
+
+    echo "Unfreezing Ceph state (unsetting noout, nobackfill, norecover, noscrub, nodeep-scrub)..."
+    for flag in noout nobackfill norecover noscrub nodeep-scrub; do
+        run_ceph_cmd "osd unset $flag"
+    done
+
+    # 3d. Other Rook components
+    echo "Restoring other Rook components..."
+    grep "$ROOK_NS" "$REPLICA_FILE" | grep -v "mon" | grep -v "osd" | while read -r ns res count; do
+        echo "Restoring $res in $ns to $count..."
+        $KUBECTL scale "$res" -n "$ns" --replicas="$count"
+    done
+    
+    # 3e. Everything else
+    echo "Restoring all other resources..."
+    grep -v "$ROOK_NS" "$REPLICA_FILE" | while read -r ns res count; do
+        echo "Restoring $res in $ns to $count..."
+        $KUBECTL scale "$res" -n "$ns" --replicas="$count"
+    done
+    
+    # Final Ceph health check
+    echo "Final Ceph health check..."
+    sleep 30
+    run_ceph_cmd "health"
+else
+    echo "Warning: $REPLICA_FILE not found. Skipping scale restoration."
+fi
+
+echo "Cluster startup complete."

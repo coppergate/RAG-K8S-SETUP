@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: disk-wipe-remaining
+  namespace: rook-ceph
+spec:
+  parallelism: 5
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - worker-0
+                - worker-1
+                - worker-3
+                - inference-0
+                - inference-1
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            job-name: disk-wipe-remaining
+      containers:
+      - name: wiper
+        image: alpine
+        securityContext:
+          privileged: true
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          apk add util-linux;
+          NODE_NAME=$(hostname);
+          echo "Wiping /dev/vdb on $NODE_NAME...";
+          wipefs -a /dev/vdb;
+          dd if=/dev/zero of=/dev/vdb bs=1M count=100;
+          echo "Wipe complete on $NODE_NAME.";
+      restartPolicy: Never
+  backoffLimit: 0

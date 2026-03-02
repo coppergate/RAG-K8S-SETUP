@@ -1,0 +1,30 @@
+# IDE
+.idea/*
+!.idea/.gitignore
+
+# Project-specific exclusions
+ai-changes/
+.kube/
+.junie/
+talos/
+
+# Editor backups
+nppBackup/
+
+# Logs and transient reports
+*.log
+osd_prepare_logs.txt
+error report from shutdown restart.txt
+
+# Certs and sensitive configs
+common_config/k8s/certs/
+common_config/k8s/kube/config/kubeconfig
+common_config/k8s/talos/config/talosconfig
+common_config/k8s/talos/config/controlplane.yaml
+common_config/k8s/talos/config/worker.yaml
+
+# Cluster state
+cluster-replicas.state
+
+# Images
+# talos/metal-amd64-omni-images/ handled by talos/ exclusion
