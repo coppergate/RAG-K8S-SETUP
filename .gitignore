@@ -23,6 +23,12 @@ common_config/k8s/talos/config/talosconfig
 common_config/k8s/talos/config/controlplane.yaml
 common_config/k8s/talos/config/worker.yaml
 
+# Binaries
+common_config/k8s/talos/talosctl
+common_config/k8s/kube/kubectl
+common_config/k8s/krew/krew-linux_amd64
+common_config/k8s/krew/krew-linux_amd64.tar.gz
+
 # Cluster state
 cluster-replicas.state
 
