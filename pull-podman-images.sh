@@ -1,37 +1,26 @@
 
 # as an alternate to the K8s based registry (see the ./app-build/docker-registry directory) we can spin up a podman container 
-# without cert
-podman run --privileged -d -p 5000:5000 \
---name registry \
--v /mnt/hegemon-share/virtual-machines/registry:/var/lib/registry \
--v /etc/containers:/auth \
--e REGISTRY_AUTH=htpasswd \
--e REGISTRY_AUTH_HTPASSWD_PATH=/auth/.htpasswd \
--e REGISTRY_AUTH_HTPASSWD_REALM="Registry Realm" \
-registry:2
+# using a Quadlet configuration on hierophant:
+# /home/junie/.config/containers/systemd/registry.container
 
-# with cert
-podman run --privileged -d -p 5000:5000 \
---name registry \
--e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/hegemon.hierocracy+3.pem \
--e REGISTRY_HTTP_TLS_KEY=/certs/hegemon.hierocracy+3-key.pem \
--v /home/k8s/certs:/certs \
--v /mnt/hegemon-share/virtual-machines/registry:/var/lib/registry \
-registry:2
+# To restart the registry after configuration changes:
+# systemctl --user daemon-reload
+# systemctl --user restart registry.service
 
-# test
-podman login hierophant.hierocracy.home:5000 
+# Talos v1.12.4 Installer Images (Local Mirror)
+# These are pushed to the local registry on hierophant to be used during cluster installation.
 
-# Mirror Talos Factory images for v1.12.4 into local registry
+# Mirror Talos control-worker installer for v1.12.4
 podman pull factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846:v1.12.4
 podman tag  factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846:v1.12.4 \
             hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
-podman push hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
+podman push --tls-verify=false hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
 
+# Mirror Talos inference installer for v1.12.4
 podman pull factory.talos.dev/metal-installer/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9:v1.12.4
 podman tag  factory.talos.dev/metal-installer/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9:v1.12.4 \
             hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
-podman push hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
+podman push --tls-verify=false hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
 
 ----
 Created a new certificate valid for the following names 📜
