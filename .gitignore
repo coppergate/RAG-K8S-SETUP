@@ -5,7 +5,6 @@
 # Project-specific exclusions
 ai-changes/
 .kube/
-.junie/
 talos/
 
 # Editor backups
