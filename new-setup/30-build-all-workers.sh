@@ -10,16 +10,17 @@ source "${SETUP_ROOT}/new-setup/config-env.sh"
 source "${SETUP_ROOT}/new-setup/05-MAC-addresses.sh"
 source "${SETUP_ROOT}/new-setup/utils.sh"
 
-# Use the official Talos v1.12.4 generic installer ISO for boot (maintenance mode).
-# Extensions are preserved by install.image in per-node patches.
-WORKER_NODE_IMAGE_URL="https://github.com/siderolabs/talos/releases/download/v1.12.4/metal-amd64.iso"
-WORKER_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-amd64-v1.12.4.iso"
+# Use the Talos v1.12.4 Factory installer ISO for workers with net.ifnames=0.
+# Hash: f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846
+WORKER_NODE_IMAGE_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
+WORKER_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
 
-# Inference nodes boot the same generic ISO; extensions come from install.image
-INFERENCE_NODE_IMAGE_URL="https://github.com/siderolabs/talos/releases/download/v1.12.4/metal-amd64.iso"
-INFERENCE_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-amd64-v1.12.4.iso"
+# Use the Talos v1.12.4 Factory installer ISO for inference nodes with NVIDIA and net.ifnames=0.
+# Hash: f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9
+INFERENCE_NODE_IMAGE_URL="https://factory.talos.dev/image/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9/v1.12.4/metal-amd64.iso"
+INFERENCE_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f024-v1.12.4.iso"
 
-echo "[WK ISO] Boot ISO (Talos v1.12.4 generic): ${WORKER_NODE_IMAGE_URL}"
+echo "[WK ISO] Boot ISO (Talos v1.12.4 Factory): ${WORKER_NODE_IMAGE_URL}"
 echo "[WK ISO] Local path: ${WORKER_NODE_IMAGE}"
 if [ ! -f "${WORKER_NODE_IMAGE}" ]; then
   echo "[WK ISO] Downloading Talos v1.12.4 worker ISO..."
@@ -37,7 +38,7 @@ else
   echo "[WK ISO] Using existing ISO at ${WORKER_NODE_IMAGE}"
 fi
 
-echo "[INF ISO] Boot ISO (Talos v1.12.4 generic): ${INFERENCE_NODE_IMAGE_URL}"
+echo "[INF ISO] Boot ISO (Talos v1.12.4 Factory): ${INFERENCE_NODE_IMAGE_URL}"
 echo "[INF ISO] Local path: ${INFERENCE_NODE_IMAGE}"
 if [ ! -f "${INFERENCE_NODE_IMAGE}" ]; then
   echo "[INF ISO] Downloading Talos v1.12.4 inference ISO..."

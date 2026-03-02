@@ -30,7 +30,7 @@ echo "[4/9] Applying Control Plane configuration..."
 ${NEW_SETUP_DIR}/15-apply-cp-config.sh
 
 echo "Waiting for Control Plane nodes to reboot and apply configuration..."
-sleep 100
+sleep 120
 
 echo "[5/9] Bootstrapping Control Plane..."
 ${NEW_SETUP_DIR}/20-bootstrap-cp.sh

@@ -1,9 +1,9 @@
 machine:
   network:
     interfaces:
-      - interface: enp1s0
+      - interface: eth0
         dhcp: true
-      - interface: enp2s0
+      - interface: eth1
         dhcp: false
     searchDomains:
       - "hierocracy"
@@ -20,6 +20,12 @@ machine:
   time:
     servers:
       - "time.nist.gov"
+  kernel:
+    args:
+      - net.ifnames=0
+  install:
+    extraKernelArgs:
+      - net.ifnames=0
   features:
     # Disable Talos auto/stable hostname doc so per-node static hostnames from
     # patch-control-*.yaml / patch-worker-*.yaml are authoritative.

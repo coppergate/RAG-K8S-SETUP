@@ -13,8 +13,8 @@ source "${SETUP_ROOT}/new-setup/utils.sh"
 echo "BOOTSTRAPPING CLUSTER"
 # Wait for the node to be reachable and API to be up (even if in maintenance mode)
 
-MAX_RETRIES=5
-RETRY_INTERVAL=10
+MAX_RETRIES=40
+RETRY_INTERVAL=15
 for i in $(seq 1 $MAX_RETRIES); do
     echo "[Bootstrap] Attempt $i of $MAX_RETRIES..."
     if sudo -E ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" bootstrap --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}"; then

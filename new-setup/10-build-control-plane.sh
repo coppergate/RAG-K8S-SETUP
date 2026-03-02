@@ -10,12 +10,12 @@ source "${SETUP_ROOT}/new-setup/config-env.sh"
 source "${SETUP_ROOT}/new-setup/05-MAC-addresses.sh"
 source "${SETUP_ROOT}/new-setup/utils.sh"
 
-# Use the official Talos v1.12.4 generic installer ISO for boot (maintenance mode).
-# Extensions are preserved by install.image in per-node patches.
-CONTROL_NODE_IMAGE_URL="https://github.com/siderolabs/talos/releases/download/v1.12.4/metal-amd64.iso"
-CONTROL_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-amd64-v1.12.4.iso"
+# Use the Talos v1.12.4 Factory installer ISO for boot with net.ifnames=0.
+# Hash: f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846
+CONTROL_NODE_IMAGE_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
+CONTROL_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
 
-echo "[CP ISO] Boot ISO (Talos v1.12.4 generic): ${CONTROL_NODE_IMAGE_URL}"
+echo "[CP ISO] Boot ISO (Talos v1.12.4 Factory): ${CONTROL_NODE_IMAGE_URL}"
 echo "[CP ISO] Local path: ${CONTROL_NODE_IMAGE}"
 
 if [ ! -f "${CONTROL_NODE_IMAGE}" ]; then
