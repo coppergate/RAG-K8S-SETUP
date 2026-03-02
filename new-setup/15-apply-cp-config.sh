@@ -13,7 +13,8 @@ echo "generating the configurations"
 sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443" \
 --install-disk /dev/vda \
 --output "${TALOS_CONFIG}" \
---config-patch @"${SETUP_ROOT}/configs/patchall.yaml" \
+--machine-patch @"${SETUP_ROOT}/configs/machine-patchall.yaml" \
+--cluster-patch @"${SETUP_ROOT}/configs/cluster-patchall.yaml" \
 --force 
 
 echo "Removing conflicting HostnameConfig from generated files..."

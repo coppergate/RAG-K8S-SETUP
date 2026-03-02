@@ -22,6 +22,19 @@ podman tag  factory.talos.dev/metal-installer/f0248d1e8abaffdec12ddc54bae270982f
             hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
 podman push --tls-verify=false hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
 
+# Download Boot ISOs to local store (shared with hierophant)
+ISO_DIR="./talos/iso-images/v1.12.4"
+mkdir -p "${ISO_DIR}"
+
+CP_ISO_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
+INF_ISO_URL="https://factory.talos.dev/image/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9/v1.12.4/metal-amd64.iso"
+
+echo "Downloading Control Plane / Worker ISO..."
+curl -L "${CP_ISO_URL}" -o "${ISO_DIR}/talos-metal-f1d3-v1.12.4.iso"
+
+echo "Downloading Inference (NVIDIA) ISO..."
+curl -L "${INF_ISO_URL}" -o "${ISO_DIR}/talos-metal-f024-v1.12.4.iso"
+
 ----
 Created a new certificate valid for the following names 📜
  - "hegemon.hierocracy"
@@ -33,21 +46,8 @@ The certificate is at "./hegemon.hierocracy+3.pem" and the key at "./hegemon.hie
 
 
 
-kubectl delete -n postgres -f ./manifests/UI/manifests/
-kubectl delete -n postgres service/postgres-operator-ui
-kubectl delete -n postgres service/postgres-operator-ui-lb
-kubectl delete -n postgres -f ./manifests/api-service.yaml  
-kubectl delete -n postgres -f ./manifests/operator-service-account-rbac.yaml  
-kubectl delete -n postgres -f ./manifests/postgres-operator.yaml  
-kubectl delete -n postgres -f ./manifests/configmap.yaml  
 
 
 
 
 
-kubectl expose service postgres-operator-ui \
-    --name=postgres-operator-ui-lb \
-    --port=8081 \
-    --target-port=80 \
-    --type=LoadBalancer \
-    -n postgres

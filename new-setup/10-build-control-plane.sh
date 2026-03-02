@@ -14,21 +14,27 @@ source "${SETUP_ROOT}/new-setup/utils.sh"
 # Hash: f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846
 CONTROL_NODE_IMAGE_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
 CONTROL_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
+LOCAL_ISO_PATH="${SETUP_ROOT}/talos/iso-images/v1.12.4/talos-metal-f1d3-v1.12.4.iso"
 
-echo "[CP ISO] Boot ISO (Talos v1.12.4 Factory): ${CONTROL_NODE_IMAGE_URL}"
-echo "[CP ISO] Local path: ${CONTROL_NODE_IMAGE}"
+echo "[CP ISO] Boot ISO: ${CONTROL_NODE_IMAGE}"
 
 if [ ! -f "${CONTROL_NODE_IMAGE}" ]; then
-  echo "[CP ISO] Downloading Talos v1.12.4 boot ISO..."
-  tmpfile=$(mktemp)
-  if curl -fL "${CONTROL_NODE_IMAGE_URL}" -o "${tmpfile}"; then
-    sudo mkdir -p /var/lib/libvirt/images
-    sudo install -m 0644 "${tmpfile}" "${CONTROL_NODE_IMAGE}"
-    rm -f "${tmpfile}"
+  if [ -f "${LOCAL_ISO_PATH}" ]; then
+    echo "[CP ISO] Copying from local store: ${LOCAL_ISO_PATH}"
+    sudo cp "${LOCAL_ISO_PATH}" "${CONTROL_NODE_IMAGE}"
+    sudo chmod 0644 "${CONTROL_NODE_IMAGE}"
   else
-    echo "ERROR: Failed to download ${CONTROL_NODE_IMAGE_URL}" >&2
-    rm -f "${tmpfile}"
-    exit 1
+    echo "[CP ISO] Not found locally, downloading from ${CONTROL_NODE_IMAGE_URL}..."
+    tmpfile=$(mktemp)
+    if curl -fL "${CONTROL_NODE_IMAGE_URL}" -o "${tmpfile}"; then
+      sudo mkdir -p /var/lib/libvirt/images
+      sudo install -m 0644 "${tmpfile}" "${CONTROL_NODE_IMAGE}"
+      rm -f "${tmpfile}"
+    else
+      echo "ERROR: Failed to download ${CONTROL_NODE_IMAGE_URL}" >&2
+      rm -f "${tmpfile}"
+      exit 1
+    fi
   fi
 else
   echo "[CP ISO] Using existing ISO at ${CONTROL_NODE_IMAGE}"

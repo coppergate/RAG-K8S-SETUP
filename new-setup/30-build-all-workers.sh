@@ -14,43 +14,55 @@ source "${SETUP_ROOT}/new-setup/utils.sh"
 # Hash: f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846
 WORKER_NODE_IMAGE_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
 WORKER_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
+LOCAL_WORKER_ISO="${SETUP_ROOT}/talos/iso-images/v1.12.4/talos-metal-f1d3-v1.12.4.iso"
 
 # Use the Talos v1.12.4 Factory installer ISO for inference nodes with NVIDIA and net.ifnames=0.
 # Hash: f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9
 INFERENCE_NODE_IMAGE_URL="https://factory.talos.dev/image/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9/v1.12.4/metal-amd64.iso"
 INFERENCE_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f024-v1.12.4.iso"
+LOCAL_INF_ISO="${SETUP_ROOT}/talos/iso-images/v1.12.4/talos-metal-f024-v1.12.4.iso"
 
-echo "[WK ISO] Boot ISO (Talos v1.12.4 Factory): ${WORKER_NODE_IMAGE_URL}"
-echo "[WK ISO] Local path: ${WORKER_NODE_IMAGE}"
+echo "[WK ISO] Boot ISO: ${WORKER_NODE_IMAGE}"
 if [ ! -f "${WORKER_NODE_IMAGE}" ]; then
-  echo "[WK ISO] Downloading Talos v1.12.4 worker ISO..."
-  tmpfile=$(mktemp)
-  if curl -fL "${WORKER_NODE_IMAGE_URL}" -o "${tmpfile}"; then
-    sudo mkdir -p /var/lib/libvirt/images
-    sudo install -m 0644 "${tmpfile}" "${WORKER_NODE_IMAGE}"
-    rm -f "${tmpfile}"
+  if [ -f "${LOCAL_WORKER_ISO}" ]; then
+    echo "[WK ISO] Copying from local store: ${LOCAL_WORKER_ISO}"
+    sudo cp "${LOCAL_WORKER_ISO}" "${WORKER_NODE_IMAGE}"
+    sudo chmod 0644 "${WORKER_NODE_IMAGE}"
   else
-    echo "ERROR: Failed to download ${WORKER_NODE_IMAGE_URL}" >&2
-    rm -f "${tmpfile}"
-    exit 1
+    echo "[WK ISO] Not found locally, downloading from ${WORKER_NODE_IMAGE_URL}..."
+    tmpfile=$(mktemp)
+    if curl -fL "${WORKER_NODE_IMAGE_URL}" -o "${tmpfile}"; then
+      sudo mkdir -p /var/lib/libvirt/images
+      sudo install -m 0644 "${tmpfile}" "${WORKER_NODE_IMAGE}"
+      rm -f "${tmpfile}"
+    else
+      echo "ERROR: Failed to download ${WORKER_NODE_IMAGE_URL}" >&2
+      rm -f "${tmpfile}"
+      exit 1
+    fi
   fi
 else
   echo "[WK ISO] Using existing ISO at ${WORKER_NODE_IMAGE}"
 fi
 
-echo "[INF ISO] Boot ISO (Talos v1.12.4 Factory): ${INFERENCE_NODE_IMAGE_URL}"
-echo "[INF ISO] Local path: ${INFERENCE_NODE_IMAGE}"
+echo "[INF ISO] Boot ISO: ${INFERENCE_NODE_IMAGE}"
 if [ ! -f "${INFERENCE_NODE_IMAGE}" ]; then
-  echo "[INF ISO] Downloading Talos v1.12.4 inference ISO..."
-  tmpfile=$(mktemp)
-  if curl -fL "${INFERENCE_NODE_IMAGE_URL}" -o "${tmpfile}"; then
-    sudo mkdir -p /var/lib/libvirt/images
-    sudo install -m 0644 "${tmpfile}" "${INFERENCE_NODE_IMAGE}"
-    rm -f "${tmpfile}"
+  if [ -f "${LOCAL_INF_ISO}" ]; then
+    echo "[INF ISO] Copying from local store: ${LOCAL_INF_ISO}"
+    sudo cp "${LOCAL_INF_ISO}" "${INFERENCE_NODE_IMAGE}"
+    sudo chmod 0644 "${INFERENCE_NODE_IMAGE}"
   else
-    echo "ERROR: Failed to download ${INFERENCE_NODE_IMAGE_URL}" >&2
-    rm -f "${tmpfile}"
-    exit 1
+    echo "[INF ISO] Not found locally, downloading from ${INFERENCE_NODE_IMAGE_URL}..."
+    tmpfile=$(mktemp)
+    if curl -fL "${INFERENCE_NODE_IMAGE_URL}" -o "${tmpfile}"; then
+      sudo mkdir -p /var/lib/libvirt/images
+      sudo install -m 0644 "${tmpfile}" "${INFERENCE_NODE_IMAGE}"
+      rm -f "${tmpfile}"
+    else
+      echo "ERROR: Failed to download ${INFERENCE_NODE_IMAGE_URL}" >&2
+      rm -f "${tmpfile}"
+      exit 1
+    fi
   fi
 else
   echo "[INF ISO] Using existing ISO at ${INFERENCE_NODE_IMAGE}"
