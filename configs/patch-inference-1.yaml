@@ -2,7 +2,7 @@ machine:
   network:
     hostname: "inference-1"
     interfaces:
-      - interface: eth1
+      - interface: enp2s0
         addresses:
           - 172.20.0.121/16
   install:

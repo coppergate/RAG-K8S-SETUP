@@ -1,9 +1,9 @@
 machine:
   network:
     interfaces:
-      - interface: eth0
+      - interface: enp1s0
         dhcp: true
-      - interface: eth1
+      - interface: enp2s0
         dhcp: false
     searchDomains:
       - "hierocracy"
@@ -43,15 +43,15 @@ machine:
     mirrors:
       "*":
         endpoints:
-          - http://172.20.1.26:5000
-      "172.20.1.26:5000":
+          - http://hierophant.hierocracy.home:5000
+      "hierophant.hierocracy.home:5000":
         endpoints:
-          - http://172.20.1.26:5000
+          - http://hierophant.hierocracy.home:5000
       "registry.container-registry.svc.cluster.local:5000":
         endpoints:
           - http://172.20.1.26:5000
     config:
-      "172.20.1.26:5000":
+      "hierophant.hierocracy.home:5000":
         tls:
           insecureSkipVerify: true
       "registry.container-registry.svc.cluster.local:5000":

@@ -2,7 +2,7 @@ machine:
   network:
     hostname: worker-2
     interfaces:
-      - interface: eth1
+      - interface: enp2s0
         addresses:
           - 172.20.0.112/16
   install:
