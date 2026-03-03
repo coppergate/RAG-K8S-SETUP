@@ -15,26 +15,33 @@ INSTALLER_IMAGE="${REGISTRY}/siderolabs/installer-control-worker:${TALOS_VERSION
 TALOS_BIN="/home/k8s/talos/talosctl"
 SETUP_ROOT="/mnt/hegemon-share/share/code/kubernetes-setup"
 
+# Check for non-interactive sudo capability
+check_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        echo "WARNING: Passwordless sudo is not available for all commands. Some steps may fail."
+    fi
+}
+check_sudo
+
 echo "=== BUILDING TEST VM: ${VM_NAME} ==="
 
 # 0. Ensure Network is setup
 echo "[0/4] Checking libvirt networks..."
 
 # Ensure host bridge for lb-net exists if not already present
-# lb-net in new-setup/lb-net.xml is a "bridge to existing host bridge" network
 if ! ip link show br-app >/dev/null 2>&1; then
     echo "Creating host bridge br-app..."
-    sudo ip link add br-app type bridge || true
-    sudo ip addr add 172.20.0.1/16 dev br-app || true
-    sudo ip link set br-app up || true
+    sudo -n ip link add br-app type bridge || true
+    sudo -n ip addr add 172.20.0.1/16 dev br-app || true
+    sudo -n ip link set br-app up || true
     # If lb-net was already active, it might need to be restarted to recognize the new bridge
-    sudo virsh net-destroy lb-net >/dev/null 2>&1 || true
+    sudo -n virsh net-destroy lb-net >/dev/null 2>&1 || true
 fi
 
-if ! sudo virsh net-info talos-nat >/dev/null 2>&1; then
+if ! sudo -n virsh net-info talos-nat >/dev/null 2>&1; then
     echo "Defining talos-nat network..."
     if [ -f "${SETUP_ROOT}/new-setup/talos-nat.xml" ]; then
-        sudo virsh net-define "${SETUP_ROOT}/new-setup/talos-nat.xml"
+        sudo -n virsh net-define "${SETUP_ROOT}/new-setup/talos-nat.xml"
     else
         echo "Creating basic talos-nat.xml..."
         cat > /tmp/talos-nat.xml <<EOF
@@ -51,19 +58,19 @@ if ! sudo virsh net-info talos-nat >/dev/null 2>&1; then
   </ip>
 </network>
 EOF
-        sudo virsh net-define /tmp/talos-nat.xml
+        sudo -n virsh net-define /tmp/talos-nat.xml
         rm /tmp/talos-nat.xml
     fi
 fi
-if [ "$(sudo virsh net-info talos-nat | grep 'Active' | awk '{print $2}')" != "yes" ]; then
+if [ "$(sudo -n virsh net-info talos-nat | grep 'Active' | awk '{print $2}')" != "yes" ]; then
     echo "Starting talos-nat network..."
-    sudo virsh net-start talos-nat
+    sudo -n virsh net-start talos-nat
 fi
 
-if ! sudo virsh net-info lb-net >/dev/null 2>&1; then
+if ! sudo -n virsh net-info lb-net >/dev/null 2>&1; then
     echo "Defining lb-net network..."
     if [ -f "${SETUP_ROOT}/new-setup/lb-net.xml" ]; then
-        sudo virsh net-define "${SETUP_ROOT}/new-setup/lb-net.xml"
+        sudo -n virsh net-define "${SETUP_ROOT}/new-setup/lb-net.xml"
     else
         echo "Creating basic lb-net.xml..."
         cat > /tmp/lb-net.xml <<EOF
@@ -73,48 +80,48 @@ if ! sudo virsh net-info lb-net >/dev/null 2>&1; then
   <bridge name='br-app'/>
 </network>
 EOF
-        sudo virsh net-define /tmp/lb-net.xml
+        sudo -n virsh net-define /tmp/lb-net.xml
         rm /tmp/lb-net.xml
     fi
 fi
-if [ "$(sudo virsh net-info lb-net | grep 'Active' | awk '{print $2}')" != "yes" ]; then
+if [ "$(sudo -n virsh net-info lb-net | grep 'Active' | awk '{print $2}')" != "yes" ]; then
     echo "Starting lb-net network..."
-    sudo virsh net-start lb-net
+    sudo -n virsh net-start lb-net
 fi
 
 # Add our test VM to the network DHCP if not already there
-if sudo virsh net-dumpxml talos-nat | grep -q "${MAC_ADDR}"; then
+if sudo -n virsh net-dumpxml talos-nat | grep -q "${MAC_ADDR}"; then
     echo "test-vm entry already exists in talos-nat DHCP."
 else
     echo "Updating talos-nat DHCP with test-vm entry..."
     cat > /tmp/test-vm-net.xml <<EOF
 <host mac='${MAC_ADDR}' name='${VM_NAME}' ip='${VM_IP}'/>
 EOF
-    sudo virsh net-update talos-nat add ip-dhcp-host /tmp/test-vm-net.xml --live --config || true
+    sudo -n virsh net-update talos-nat add ip-dhcp-host /tmp/test-vm-net.xml --live --config || true
     rm /tmp/test-vm-net.xml
 fi
 
 # 1. Create Disk
 echo "[1/4] Preparing disk volume in CONTROLLER pool..."
 # Ensure pool exists
-sudo virsh pool-info CONTROLLER >/dev/null 2>&1 || {
-    sudo mkdir -p /var/lib/libvirt/storage-pools/CONTROLLER
-    sudo virsh pool-define-as --name CONTROLLER --target /var/lib/libvirt/storage-pools/CONTROLLER --type dir
-    sudo virsh pool-build CONTROLLER
-    sudo virsh pool-start CONTROLLER
-    sudo virsh pool-autostart CONTROLLER
+sudo -n virsh pool-info CONTROLLER >/dev/null 2>&1 || {
+    sudo -n mkdir -p /var/lib/libvirt/storage-pools/CONTROLLER
+    sudo -n virsh pool-define-as --name CONTROLLER --target /var/lib/libvirt/storage-pools/CONTROLLER --type dir
+    sudo -n virsh pool-build CONTROLLER
+    sudo -n virsh pool-start CONTROLLER
+    sudo -n virsh pool-autostart CONTROLLER
 }
 # Delete existing volume if it exists to be idempotent
-sudo virsh vol-delete --pool CONTROLLER "${VM_NAME}-disk.qcow2" >/dev/null 2>&1 || true
-sudo virsh vol-create-as CONTROLLER "${VM_NAME}-disk.qcow2" "${DISK_SIZE}" --format qcow2
+sudo -n virsh vol-delete --pool CONTROLLER "${VM_NAME}-disk.qcow2" >/dev/null 2>&1 || true
+sudo -n virsh vol-create-as CONTROLLER "${VM_NAME}-disk.qcow2" "${DISK_SIZE}" --format qcow2
 
 # 2. Start VM
 echo "[2/4] Starting VM ${VM_NAME}..."
 # Remove existing VM if it exists
-sudo virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
-sudo virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
+sudo -n virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
+sudo -n virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
 
-sudo virt-install \
+sudo -n virt-install \
   --virt-type kvm \
   --name "${VM_NAME}" \
   --ram "${RAM}" \
@@ -131,7 +138,7 @@ sleep 60
 
 # 3. Verify IP
 echo "[3/4] Verifying VM IP..."
-ACTUAL_IP=$(sudo virsh domifaddr "${VM_NAME}" | grep -E '/' | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+ACTUAL_IP=$(sudo -n virsh domifaddr "${VM_NAME}" | grep -E '/' | awk '{print $4}' | cut -d/ -f1 | head -n 1)
 if [ -z "$ACTUAL_IP" ]; then
     echo "WARNING: Could not find IP via domifaddr. Trying ping to ${VM_IP}..."
     if ping -c 1 -W 5 "${VM_IP}" >/dev/null 2>&1; then
