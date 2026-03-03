@@ -1,5 +1,3 @@
-version: v1alpha1
-kind: MachineConfig
 machine:
     network:
         interfaces:
