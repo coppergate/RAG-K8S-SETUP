@@ -19,6 +19,18 @@ echo "=== BUILDING TEST VM: ${VM_NAME} ==="
 
 # 0. Ensure Network is setup
 echo "[0/4] Checking libvirt networks..."
+
+# Ensure host bridge for lb-net exists if not already present
+# lb-net in new-setup/lb-net.xml is a "bridge to existing host bridge" network
+if ! ip link show br-app >/dev/null 2>&1; then
+    echo "Creating host bridge br-app..."
+    sudo ip link add br-app type bridge || true
+    sudo ip addr add 172.20.0.1/16 dev br-app || true
+    sudo ip link set br-app up || true
+    # If lb-net was already active, it might need to be restarted to recognize the new bridge
+    sudo virsh net-destroy lb-net >/dev/null 2>&1 || true
+fi
+
 if ! sudo virsh net-info talos-nat >/dev/null 2>&1; then
     echo "Defining talos-nat network..."
     if [ -f "${SETUP_ROOT}/new-setup/talos-nat.xml" ]; then
@@ -83,7 +95,7 @@ EOF
 fi
 
 # 1. Create Disk
-echo "[1/4] Creating disk volume in CONTROLLER pool..."
+echo "[1/4] Preparing disk volume in CONTROLLER pool..."
 # Ensure pool exists
 sudo virsh pool-info CONTROLLER >/dev/null 2>&1 || {
     sudo mkdir -p /var/lib/libvirt/storage-pools/CONTROLLER
@@ -92,16 +104,15 @@ sudo virsh pool-info CONTROLLER >/dev/null 2>&1 || {
     sudo virsh pool-start CONTROLLER
     sudo virsh pool-autostart CONTROLLER
 }
-sudo virsh vol-create-as CONTROLLER "${VM_NAME}-disk.qcow2" "${DISK_SIZE}" --format qcow2 || echo "Volume might already exist, proceeding..."
+# Delete existing volume if it exists to be idempotent
+sudo virsh vol-delete --pool CONTROLLER "${VM_NAME}-disk.qcow2" >/dev/null 2>&1 || true
+sudo virsh vol-create-as CONTROLLER "${VM_NAME}-disk.qcow2" "${DISK_SIZE}" --format qcow2
 
 # 2. Start VM
 echo "[2/4] Starting VM ${VM_NAME}..."
 # Remove existing VM if it exists
 sudo virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
-sudo virsh undefine "${VM_NAME}" --remove-all-storage >/dev/null 2>&1 || true
-
-# Re-create disk since we might have just deleted it
-sudo virsh vol-create-as CONTROLLER "${VM_NAME}-disk.qcow2" "${DISK_SIZE}" --format qcow2 || true
+sudo virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
 
 sudo virt-install \
   --virt-type kvm \
