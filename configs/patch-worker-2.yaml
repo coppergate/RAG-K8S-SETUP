@@ -2,10 +2,8 @@ machine:
   network:
     hostname: worker-2
     interfaces:
-      - interface: eth1
-        addresses:
-          - 172.20.0.112/16
+    - interface: eth1
+      addresses:
+      - 172.20.0.112/16
   install:
-    disk: /dev/vda # The disk used for installations.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
-    wipe: true # Indicates if the installation disk should be wiped at installation time.

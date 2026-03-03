@@ -20,16 +20,13 @@ machine:
     time:
         servers:
             - "time.nist.gov"
-    kernel:
-        args:
-            - net.ifnames=0
-    install:
-        extraKernelArgs:
-            - net.ifnames=0
     features:
         stableHostname: false
         imageCache:
             localEnabled: true
+    install:
+        disk: /dev/vda
+        wipe: true
     kubelet:
         extraArgs:
             rotate-server-certificates: "true"
