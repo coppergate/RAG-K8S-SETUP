@@ -178,9 +178,9 @@ EOF
 mv "${CONFIG_DIR}/controlplane.yaml.patched" "${CONFIG_DIR}/controlplane.yaml"
 
 echo "Applying config to ${ACTUAL_IP}..."
-"${TALOS_BIN}" --insecure apply-config --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${CONFIG_DIR}/controlplane.yaml"
+"${TALOS_BIN}" apply-config --insecure --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${CONFIG_DIR}/controlplane.yaml"
 
 echo ""
 echo "=== TEST VM CONFIG APPLIED ==="
 echo "Monitor installation with:"
-echo "${TALOS_BIN} --insecure logs -n ${ACTUAL_IP} --endpoints ${ACTUAL_IP} installer"
+echo "${TALOS_BIN} --talosconfig ${CONFIG_DIR}/talosconfig logs -n ${ACTUAL_IP} --endpoints ${ACTUAL_IP} installer"
