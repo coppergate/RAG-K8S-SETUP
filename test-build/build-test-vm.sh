@@ -145,17 +145,18 @@ echo "VM IP identified: ${ACTUAL_IP}"
 
 # 4. Generate & Apply Config
 echo "[4/4] Generating and applying Talos config..."
-mkdir -p "${SETUP_ROOT}/test-build/config"
+CONFIG_DIR="/home/junie/test-build-config"
+mkdir -p "${CONFIG_DIR}"
 
 echo "Generating config with installer: ${INSTALLER_IMAGE}"
 "${TALOS_BIN}" gen config test-cluster "https://${ACTUAL_IP}:6443" \
   --install-disk /dev/vda \
   --install-image "${INSTALLER_IMAGE}" \
-  --output "${SETUP_ROOT}/test-build/config" \
+  --output "${CONFIG_DIR}" \
   --force
 
 # Apply a patch to ensure it uses our local registry for other images too
-cat > "${SETUP_ROOT}/test-build/config/patch.yaml" <<EOF
+cat > "${CONFIG_DIR}/patch.yaml" <<EOF
 machine:
   registries:
     mirrors:
@@ -164,13 +165,13 @@ machine:
           - http://${REGISTRY}
 EOF
 
-"${TALOS_BIN}" machineconfig patch "${SETUP_ROOT}/test-build/config/controlplane.yaml" \
-  --patch @"${SETUP_ROOT}/test-build/config/patch.yaml" \
-  -o "${SETUP_ROOT}/test-build/config/controlplane.yaml.patched"
-mv "${SETUP_ROOT}/test-build/config/controlplane.yaml.patched" "${SETUP_ROOT}/test-build/config/controlplane.yaml"
+"${TALOS_BIN}" machineconfig patch "${CONFIG_DIR}/controlplane.yaml" \
+  --patch @"${CONFIG_DIR}/patch.yaml" \
+  -o "${CONFIG_DIR}/controlplane.yaml.patched"
+mv "${CONFIG_DIR}/controlplane.yaml.patched" "${CONFIG_DIR}/controlplane.yaml"
 
 echo "Applying config to ${ACTUAL_IP}..."
-"${TALOS_BIN}" --insecure apply-config --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${SETUP_ROOT}/test-build/config/controlplane.yaml"
+"${TALOS_BIN}" --insecure apply-config --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${CONFIG_DIR}/controlplane.yaml"
 
 echo ""
 echo "=== TEST VM CONFIG APPLIED ==="
