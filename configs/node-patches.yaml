@@ -26,6 +26,7 @@ machine:
             localEnabled: true
     install:
         disk: /dev/vda
+        image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
         wipe: true
     kubelet:
         extraArgs:

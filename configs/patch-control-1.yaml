@@ -8,5 +8,3 @@ machine:
     - interface: eth1
       addresses:
       - 172.20.0.101/16
-  install:
-    image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
