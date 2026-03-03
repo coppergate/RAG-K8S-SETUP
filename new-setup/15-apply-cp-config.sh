@@ -13,9 +13,17 @@ echo "generating the configurations"
 sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443" \
 --install-disk /dev/vda \
 --output "${TALOS_CONFIG}" \
---config-patch-control-plane @"${SETUP_ROOT}/configs/node-patches.yaml" \
---config-patch-worker @"${SETUP_ROOT}/configs/node-patches.yaml" \
 --force 
+
+echo "Applying node patches..."
+# Use machineconfig patch to apply the node-patches to generated machine configs.
+# This avoids issues where gen config tries to apply machine-specific patches to talosconfig.
+for f in "${TALOS_CONFIG}/controlplane.yaml" "${TALOS_CONFIG}/worker.yaml"; do
+    if [ -f "$f" ]; then
+        sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "$f" --patch @"${SETUP_ROOT}/configs/node-patches.yaml" -o "$f.patched"
+        sudo mv "$f.patched" "$f"
+    fi
+done
 
 echo "Removing conflicting HostnameConfig from generated files..."
 # Talos v1.12.4 gen config adds a HostnameConfig document that conflicts with node patches.
