@@ -21,7 +21,27 @@ echo "=== BUILDING TEST VM: ${VM_NAME} ==="
 echo "[0/4] Checking libvirt networks..."
 if ! sudo virsh net-info talos-nat >/dev/null 2>&1; then
     echo "Defining talos-nat network..."
-    sudo virsh net-define "${SETUP_ROOT}/talos-nat.xml"
+    if [ -f "${SETUP_ROOT}/new-setup/talos-nat.xml" ]; then
+        sudo virsh net-define "${SETUP_ROOT}/new-setup/talos-nat.xml"
+    else
+        echo "Creating basic talos-nat.xml..."
+        cat > /tmp/talos-nat.xml <<EOF
+<network>
+  <name>talos-nat</name>
+  <bridge name="talos-bridge" stp="on" delay="0"/>
+  <forward mode="nat">
+    <nat/>
+  </forward>
+  <ip address="10.0.0.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="10.0.0.20" end="10.0.0.30"/>
+    </dhcp>
+  </ip>
+</network>
+EOF
+        sudo virsh net-define /tmp/talos-nat.xml
+        rm /tmp/talos-nat.xml
+    fi
 fi
 if [ "$(sudo virsh net-info talos-nat | grep 'Active' | awk '{print $2}')" != "yes" ]; then
     echo "Starting talos-nat network..."
@@ -30,17 +50,20 @@ fi
 
 if ! sudo virsh net-info lb-net >/dev/null 2>&1; then
     echo "Defining lb-net network..."
-    # Create a basic lb-net.xml if it doesn't exist
-    if [ ! -f "${SETUP_ROOT}/lb-net.xml" ]; then
-        cat > "${SETUP_ROOT}/lb-net.xml" <<EOF
+    if [ -f "${SETUP_ROOT}/new-setup/lb-net.xml" ]; then
+        sudo virsh net-define "${SETUP_ROOT}/new-setup/lb-net.xml"
+    else
+        echo "Creating basic lb-net.xml..."
+        cat > /tmp/lb-net.xml <<EOF
 <network>
   <name>lb-net</name>
   <forward mode='bridge'/>
   <bridge name='br-app'/>
 </network>
 EOF
+        sudo virsh net-define /tmp/lb-net.xml
+        rm /tmp/lb-net.xml
     fi
-    sudo virsh net-define "${SETUP_ROOT}/lb-net.xml"
 fi
 if [ "$(sudo virsh net-info lb-net | grep 'Active' | awk '{print $2}')" != "yes" ]; then
     echo "Starting lb-net network..."
@@ -48,9 +71,10 @@ if [ "$(sudo virsh net-info lb-net | grep 'Active' | awk '{print $2}')" != "yes"
 fi
 
 # Add our test VM to the network DHCP if not already there
-if ! grep -q "${MAC_ADDR}" "${SETUP_ROOT}/talos-nat.xml"; then
-    echo "Updating talos-nat.xml with test-vm entry..."
-    # We'll just use a temporary XML to update the network
+if sudo virsh net-dumpxml talos-nat | grep -q "${MAC_ADDR}"; then
+    echo "test-vm entry already exists in talos-nat DHCP."
+else
+    echo "Updating talos-nat DHCP with test-vm entry..."
     cat > /tmp/test-vm-net.xml <<EOF
 <host mac='${MAC_ADDR}' name='${VM_NAME}' ip='${VM_IP}'/>
 EOF
@@ -135,9 +159,9 @@ EOF
 mv "${SETUP_ROOT}/test-build/config/controlplane.yaml.patched" "${SETUP_ROOT}/test-build/config/controlplane.yaml"
 
 echo "Applying config to ${ACTUAL_IP}..."
-"${TALOS_BIN}" apply-config --insecure --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${SETUP_ROOT}/test-build/config/controlplane.yaml"
+"${TALOS_BIN}" --insecure apply-config --nodes "${ACTUAL_IP}" --endpoints "${ACTUAL_IP}" --file "${SETUP_ROOT}/test-build/config/controlplane.yaml"
 
 echo ""
 echo "=== TEST VM CONFIG APPLIED ==="
 echo "Monitor installation with:"
-echo "${TALOS_BIN} logs -n ${ACTUAL_IP} --endpoints ${ACTUAL_IP} --insecure installer"
+echo "${TALOS_BIN} --insecure logs -n ${ACTUAL_IP} --endpoints ${ACTUAL_IP} installer"
