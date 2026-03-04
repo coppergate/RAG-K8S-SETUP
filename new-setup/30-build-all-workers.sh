@@ -68,44 +68,38 @@ else
   echo "[INF ISO] Using existing ISO at ${INFERENCE_NODE_IMAGE}"
 fi
 
-# Disks for workers
-WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
-WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
-WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part1"
-WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
+# Ensure storage pool exists
+sudo -n virsh pool-info CONTROLLER >/dev/null 2>&1 || {
+    echo "Creating CONTROLLER storage pool..."
+    sudo -n mkdir -p /var/lib/libvirt/storage-pools/CONTROLLER
+    sudo -n virsh pool-define-as --name CONTROLLER --target /var/lib/libvirt/storage-pools/CONTROLLER --type dir
+    sudo -n virsh pool-build CONTROLLER
+    sudo -n virsh pool-start CONTROLLER
+    sudo -n virsh pool-autostart CONTROLLER
+}
 
-# Ceph Metadata disks for workers (on NVMe)
-WORKER_0_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part3"
-WORKER_1_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part4"
-WORKER_2_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part3"
-WORKER_3_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part4"
-
-# attachable disks for storage<
-STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR" 
-STORAGE_1_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX" 
-STORAGE_2_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BA2" 
-STORAGE_3_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL34JEA"
-
-
-# Disks for inference
-INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
-INFERENCE_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
-
-echo "BUILDING WORKER NODES"
+echo "BUILDING WORKER NODES (BASICS MODE)"
 for i in {0..3}; do
   mac_var="data_${i}_mac"
   extern_mac_var="data_${i}_extern_mac"
-  disk_var="WORKER_${i}_DISK"
+  name="worker-${i}"
   
-  echo "worker-${i}"
-  sudo -n virsh destroy "worker-${i}" >/dev/null 2>&1 || true
-  sudo -n virsh undefine "worker-${i}" --remove-all-storage >/dev/null 2>&1 || true
+  echo "--- BUILDING VM: $name ---"
+  # Clean up existing VM and volume if any
+  sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
+  sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
+  sudo -n virsh vol-delete --pool CONTROLLER "${name}-disk.qcow2" >/dev/null 2>&1 || true
+  
+  echo "Creating 60GB disk for $name..."
+  sudo -n virsh vol-create-as CONTROLLER "${name}-disk.qcow2" 60G --format qcow2
+  
+  echo "Running virt-install for $name..."
   sudo -E virt-install \
     --virt-type kvm \
-    --name "worker-${i}" \
+    --name "$name" \
     --ram 32768 \
     --vcpus 5 \
-    --disk path="${!disk_var}",bus=virtio \
+    --disk vol=CONTROLLER/"${name}-disk.qcow2",bus=virtio \
     --cdrom "${WORKER_NODE_IMAGE}" \
     --os-variant=linux2024 \
     --network network=talos-nat,mac="${!mac_var}" \
@@ -113,51 +107,38 @@ for i in {0..3}; do
     --boot hd,cdrom --noautoconsole
 done
 
-echo "Attach extra disks to workers (Storage and Ceph Metadata)"
-sudo virsh attach-disk worker-0 ${STORAGE_0_DISK} vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-sudo virsh attach-disk worker-0 ${WORKER_0_META} vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
+# Note: Extra disks (vdb, vdc) attachment removed for BASICS mode simplicity
+# It can be added back once core install is verified.
 
-sudo virsh attach-disk worker-1 ${STORAGE_1_DISK} vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-sudo virsh attach-disk worker-1 ${WORKER_1_META} vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
+echo "BUILDING INFERENCE NODES (BASICS MODE)"
+# Inference nodes use specialized ISO but same storage pattern
+for i in {0..1}; do
+  mac_var="inference_${i}_mac"
+  extern_mac_var="inference_${i}_extern_mac"
+  name="inference-${i}"
+  cpuset="0-13,28-41" # Fallback cpuset
+  [ "$i" -eq 1 ] && cpuset="14-27,42-55"
 
-sudo virsh attach-disk worker-2 ${STORAGE_2_DISK} vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-sudo virsh attach-disk worker-2 ${WORKER_2_META} vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-
-sudo virsh attach-disk worker-3 ${STORAGE_3_DISK} vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-sudo virsh attach-disk worker-3 ${WORKER_3_META} vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-
-echo "BUILDING INFERENCE NODES"
-echo "inference-0 (Pinned to NUMA 0)"
-sudo -n virsh destroy inference-0 >/dev/null 2>&1 || true
-sudo -n virsh undefine inference-0 --remove-all-storage >/dev/null 2>&1 || true
-sudo -E virt-install \
-  --virt-type kvm \
-  --name inference-0 \
-  --ram 32768 \
-  --vcpus 9 \
-  --cpuset 0-13,28-41 \
-  --disk path="${INFERENCE_0_DISK}",bus=virtio \
-  --cdrom "${INFERENCE_NODE_IMAGE}" \
-  --os-variant=linux2024 \
-  --network network=talos-nat,mac="${inference_0_mac}" \
-  --network network=lb-net,mac="${inference_0_extern_mac}" \
-  --boot hd,cdrom --noautoconsole
-
-echo "inference-1 (Pinned to NUMA 1)"
-sudo -n virsh destroy inference-1 >/dev/null 2>&1 || true
-sudo -n virsh undefine inference-1 --remove-all-storage >/dev/null 2>&1 || true
-sudo -E virt-install \
-  --virt-type kvm \
-  --name inference-1 \
-  --ram 32768 \
-  --vcpus 9 \
-  --cpuset 14-27,42-55 \
-  --disk path="${INFERENCE_1_DISK}",bus=virtio \
-  --cdrom "${INFERENCE_NODE_IMAGE}" \
-  --os-variant=linux2024 \
-  --network network=talos-nat,mac="${inference_1_mac}" \
-  --network network=lb-net,mac="${inference_1_extern_mac}" \
-  --boot hd,cdrom --noautoconsole
+  echo "--- BUILDING VM: $name ---"
+  sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
+  sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
+  sudo -n virsh vol-delete --pool CONTROLLER "${name}-disk.qcow2" >/dev/null 2>&1 || true
+  
+  sudo -n virsh vol-create-as CONTROLLER "${name}-disk.qcow2" 60G --format qcow2
+  
+  sudo -E virt-install \
+    --virt-type kvm \
+    --name "$name" \
+    --ram 32768 \
+    --vcpus 9 \
+    --cpuset "$cpuset" \
+    --disk vol=CONTROLLER/"${name}-disk.qcow2",bus=virtio \
+    --cdrom "${INFERENCE_NODE_IMAGE}" \
+    --os-variant=linux2024 \
+    --network network=talos-nat,mac="${!mac_var}" \
+    --network network=lb-net,mac="${!extern_mac_var}" \
+    --boot hd,cdrom --noautoconsole
+done
 
 echo "waiting for nodes to obtain IPs"
 sleep 60

@@ -34,9 +34,11 @@ machine:
           - http://${REGISTRY}
 EOF
 
-echo "Applying minimal registry patch to controlplane.yaml..."
-sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/controlplane.yaml" --patch @/tmp/basic-patch.yaml -o "${TALOS_CONFIG}/controlplane.yaml.patched"
-sudo mv "${TALOS_CONFIG}/controlplane.yaml.patched" "${TALOS_CONFIG}/controlplane.yaml"
+echo "Applying minimal registry patch to controlplane.yaml and worker.yaml..."
+for f in "controlplane.yaml" "worker.yaml"; do
+    sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" --patch @/tmp/basic-patch.yaml -o "${TALOS_CONFIG}/$f.patched"
+    sudo mv "${TALOS_CONFIG}/$f.patched" "${TALOS_CONFIG}/$f"
+done
 
 echo "Applying the configurations to control plane nodes..."
 # Note: In basics mode, we apply the same controlplane.yaml to all, 
