@@ -41,12 +41,13 @@ for f in "controlplane.yaml" "worker.yaml"; do
 done
 
 echo "Applying the configurations to control plane nodes..."
-# Note: In basics mode, we apply the same controlplane.yaml to all, 
-# and they will keep their DHCP IPs from talos-nat.
+# Apply node-specific patches (hostname, VIP, etc.) on top of the generic controlplane.yaml
+i=0
 for ip in "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"; do
     if [ -n "$ip" ]; then
-        echo "Applying to $ip..."
-        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --endpoints "$ip" --file "${TALOS_CONFIG}/controlplane.yaml"
+        echo "Applying to $ip (with node patch configs/patch-control-${i}.yaml)..."
+        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --endpoints "$ip" --file "${TALOS_CONFIG}/controlplane.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-control-${i}.yaml"
+        i=$((i+1))
     fi
 done
 
