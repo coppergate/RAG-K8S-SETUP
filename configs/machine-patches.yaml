@@ -33,6 +33,7 @@ machine:
             rotate-server-certificates: "true"
         nodeIP:
             validSubnets:
+                - 10.0.0.0/24
                 - 192.168.1.0/24
                 - 172.20.0.0/16
     files:
@@ -52,10 +53,3 @@ machine:
             "registry.container-registry.svc.cluster.local:5000":
                 endpoints:
                     - http://172.20.1.26:5000
-        config:
-            "hierophant.hierocracy.home:5000":
-                tls:
-                    insecureSkipVerify: true
-            "registry.container-registry.svc.cluster.local:5000":
-                tls:
-                    insecureSkipVerify: true
