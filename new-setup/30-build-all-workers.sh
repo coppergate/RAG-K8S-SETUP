@@ -111,6 +111,9 @@ for i in {0..3}; do
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
 
+  echo "Wiping NVMe partition for $name..."
+  sudo -n dd if=/dev/zero of="${!disk_var}" bs=1M count=10 conv=fsync || true
+
   echo "Running virt-install for $name..."
   sudo -E virt-install \
     --virt-type kvm \
@@ -122,7 +125,7 @@ for i in {0..3}; do
     --os-variant=linux2024 \
     --network network=talos-nat,mac="${!mac_var}" \
     --network network=lb-net,mac="${!extern_mac_var}" \
-    --boot hd,cdrom --noautoconsole
+    --boot cdrom,hd --noautoconsole
 done
 
 echo "Attach extra disks to workers (Storage and Ceph Metadata)"
@@ -149,6 +152,9 @@ for i in {0..1}; do
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
   
+  echo "Wiping NVMe partition for $name..."
+  sudo -n dd if=/dev/zero of="${!disk_var}" bs=1M count=10 conv=fsync || true
+
   sudo -E virt-install \
     --virt-type kvm \
     --name "$name" \
@@ -160,7 +166,7 @@ for i in {0..1}; do
     --os-variant=linux2024 \
     --network network=talos-nat,mac="${!mac_var}" \
     --network network=lb-net,mac="${!extern_mac_var}" \
-    --boot hd,cdrom --noautoconsole
+    --boot cdrom,hd --noautoconsole
 done
 
 echo "waiting for nodes to obtain IPs"

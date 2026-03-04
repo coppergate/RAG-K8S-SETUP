@@ -47,11 +47,13 @@ sudo -n virt-install \
   --os-variant=linux2024 \
   --network network=talos-nat,mac="${control_0_mac}" \
   --network network=lb-net,mac="${control_0_extern_mac}" \
-  --boot hd,cdrom --noautoconsole
+  --boot cdrom,hd --noautoconsole
 
 echo "--- BUILDING VM: control-1 ---"
 sudo -n virsh destroy control-1 >/dev/null 2>&1 || true
 sudo -n virsh undefine control-1 --remove-all-storage >/dev/null 2>&1 || true
+echo "Wiping NVMe partition for control-1..."
+sudo -n dd if=/dev/zero of="${CONTROL_1_DISK}" bs=1M count=10 conv=fsync || true
 sudo -n virt-install \
   --virt-type kvm \
   --name control-1 \
@@ -62,11 +64,13 @@ sudo -n virt-install \
   --os-variant=linux2024 \
   --network network=talos-nat,mac="${control_1_mac}" \
   --network network=lb-net,mac="${control_1_extern_mac}" \
-  --boot hd,cdrom --noautoconsole
+  --boot cdrom,hd --noautoconsole
 
 echo "--- BUILDING VM: control-2 ---"
 sudo -n virsh destroy control-2 >/dev/null 2>&1 || true
 sudo -n virsh undefine control-2 --remove-all-storage >/dev/null 2>&1 || true
+echo "Wiping NVMe partition for control-2..."
+sudo -n dd if=/dev/zero of="${CONTROL_2_DISK}" bs=1M count=10 conv=fsync || true
 sudo -n virt-install \
   --virt-type kvm \
   --name control-2 \
@@ -77,7 +81,7 @@ sudo -n virt-install \
   --os-variant=linux2024 \
   --network network=talos-nat,mac="${control_2_mac}" \
   --network network=lb-net,mac="${control_2_extern_mac}" \
-  --boot hd,cdrom --noautoconsole
+  --boot cdrom,hd --noautoconsole
 
 echo ""
 echo "Waiting for control plane to obtain IPs (60s)..."
