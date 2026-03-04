@@ -24,6 +24,10 @@ sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443
 --output "${TALOS_CONFIG}" \
 --force 
 
+echo "Updating talosconfig with endpoints and nodes..."
+sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config endpoint "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
+sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config node "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
+
 echo "Applying global patches (machine-patches.yaml and cluster-patches.yaml) to controlplane.yaml and worker.yaml..."
 for f in "controlplane.yaml" "worker.yaml"; do
     # Strip any extra documents (like HostnameConfig) that cause validation conflicts with static hostnames
