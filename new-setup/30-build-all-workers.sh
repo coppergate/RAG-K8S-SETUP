@@ -78,28 +78,46 @@ sudo -n virsh pool-info CONTROLLER >/dev/null 2>&1 || {
     sudo -n virsh pool-autostart CONTROLLER
 }
 
-echo "BUILDING WORKER NODES (BASICS MODE)"
+# Disks for workers
+WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
+WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
+WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part1"
+WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
+
+# Ceph Metadata disks for workers (on NVMe)
+WORKER_0_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part3"
+WORKER_1_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part4"
+WORKER_2_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part3"
+WORKER_3_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part4"
+
+# attachable disks for storage
+STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR" 
+STORAGE_1_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX" 
+STORAGE_2_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BA2" 
+STORAGE_3_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL34JEA"
+
+# Disks for inference
+INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
+INFERENCE_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
+
+echo "BUILDING WORKER NODES"
 for i in {0..3}; do
   mac_var="data_${i}_mac"
   extern_mac_var="data_${i}_extern_mac"
+  disk_var="WORKER_${i}_DISK"
   name="worker-${i}"
   
   echo "--- BUILDING VM: $name ---"
-  # Clean up existing VM and volume if any
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
-  sudo -n virsh vol-delete --pool CONTROLLER "${name}-disk.qcow2" >/dev/null 2>&1 || true
-  
-  echo "Creating 60GB disk for $name..."
-  sudo -n virsh vol-create-as CONTROLLER "${name}-disk.qcow2" 60G --format qcow2
-  
+
   echo "Running virt-install for $name..."
   sudo -E virt-install \
     --virt-type kvm \
     --name "$name" \
-    --ram 32768 \
-    --vcpus 5 \
-    --disk vol=CONTROLLER/"${name}-disk.qcow2",bus=virtio \
+    --ram 36864 \
+    --vcpus 7 \
+    --disk path="${!disk_var}",bus=virtio \
     --cdrom "${WORKER_NODE_IMAGE}" \
     --os-variant=linux2024 \
     --network network=talos-nat,mac="${!mac_var}" \
@@ -107,32 +125,37 @@ for i in {0..3}; do
     --boot hd,cdrom --noautoconsole
 done
 
-# Note: Extra disks (vdb, vdc) attachment removed for BASICS mode simplicity
-# It can be added back once core install is verified.
+echo "Attach extra disks to workers (Storage and Ceph Metadata)"
+for i in {0..3}; do
+  name="worker-${i}"
+  storage_disk_var="STORAGE_${i}_DISK"
+  meta_disk_var="WORKER_${i}_META"
+  
+  echo "Attaching disks to $name..."
+  sudo -n virsh attach-disk "$name" "${!storage_disk_var}" vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
+  sudo -n virsh attach-disk "$name" "${!meta_disk_var}" vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
+done
 
-echo "BUILDING INFERENCE NODES (BASICS MODE)"
-# Inference nodes use specialized ISO but same storage pattern
+echo "BUILDING INFERENCE NODES"
 for i in {0..1}; do
   mac_var="inference_${i}_mac"
   extern_mac_var="inference_${i}_extern_mac"
+  disk_var="INFERENCE_${i}_DISK"
   name="inference-${i}"
-  cpuset="0-13,28-41" # Fallback cpuset
+  cpuset="0-13,28-41"
   [ "$i" -eq 1 ] && cpuset="14-27,42-55"
 
   echo "--- BUILDING VM: $name ---"
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
-  sudo -n virsh vol-delete --pool CONTROLLER "${name}-disk.qcow2" >/dev/null 2>&1 || true
-  
-  sudo -n virsh vol-create-as CONTROLLER "${name}-disk.qcow2" 60G --format qcow2
   
   sudo -E virt-install \
     --virt-type kvm \
     --name "$name" \
     --ram 32768 \
-    --vcpus 9 \
+    --vcpus 8 \
     --cpuset "$cpuset" \
-    --disk vol=CONTROLLER/"${name}-disk.qcow2",bus=virtio \
+    --disk path="${!disk_var}",bus=virtio \
     --cdrom "${INFERENCE_NODE_IMAGE}" \
     --os-variant=linux2024 \
     --network network=talos-nat,mac="${!mac_var}" \
