@@ -53,7 +53,11 @@ CONTROL_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-p
 
 # establish control plane nodes
 echo "control-0"
-sudo virsh vol-create-as CONTROLLER control-0-disk.qcow2 60G --format qcow2 || true
+# Clean up existing VM and volume if any (idempotency like in test-build)
+sudo -n virsh destroy control-0 >/dev/null 2>&1 || true
+sudo -n virsh undefine control-0 --remove-all-storage >/dev/null 2>&1 || true
+sudo -n virsh vol-delete --pool CONTROLLER control-0-disk.qcow2 >/dev/null 2>&1 || true
+sudo virsh vol-create-as CONTROLLER control-0-disk.qcow2 60G --format qcow2
 sudo virt-install \
   --virt-type kvm \
   --name control-0 \
@@ -67,6 +71,8 @@ sudo virt-install \
   --boot hd,cdrom --noautoconsole
   
 echo "control-1"
+sudo -n virsh destroy control-1 >/dev/null 2>&1 || true
+sudo -n virsh undefine control-1 --remove-all-storage >/dev/null 2>&1 || true
 sudo virt-install \
   --virt-type kvm \
   --name control-1 \
@@ -80,6 +86,8 @@ sudo virt-install \
   --boot hd,cdrom --noautoconsole
 
 echo "control-2"
+sudo -n virsh destroy control-2 >/dev/null 2>&1 || true
+sudo -n virsh undefine control-2 --remove-all-storage >/dev/null 2>&1 || true
 sudo virt-install \
   --virt-type kvm \
   --name control-2 \

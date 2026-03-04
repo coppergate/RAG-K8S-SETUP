@@ -59,9 +59,3 @@ machine:
             "registry.container-registry.svc.cluster.local:5000":
                 tls:
                     insecureSkipVerify: true
-cluster:
-    controlPlane:
-        endpoint: https://10.0.0.15:6443
-    extraManifests:
-        - https://raw.githubusercontent.com/alex1989hu/kubelet-serving-cert-approver/main/deploy/standalone-install.yaml
-        - https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml

@@ -98,6 +98,8 @@ for i in {0..3}; do
   disk_var="WORKER_${i}_DISK"
   
   echo "worker-${i}"
+  sudo -n virsh destroy "worker-${i}" >/dev/null 2>&1 || true
+  sudo -n virsh undefine "worker-${i}" --remove-all-storage >/dev/null 2>&1 || true
   sudo -E virt-install \
     --virt-type kvm \
     --name "worker-${i}" \
@@ -126,6 +128,8 @@ sudo virsh attach-disk worker-3 ${WORKER_3_META} vdc --driver qemu --subdriver r
 
 echo "BUILDING INFERENCE NODES"
 echo "inference-0 (Pinned to NUMA 0)"
+sudo -n virsh destroy inference-0 >/dev/null 2>&1 || true
+sudo -n virsh undefine inference-0 --remove-all-storage >/dev/null 2>&1 || true
 sudo -E virt-install \
   --virt-type kvm \
   --name inference-0 \
@@ -140,6 +144,8 @@ sudo -E virt-install \
   --boot hd,cdrom --noautoconsole
 
 echo "inference-1 (Pinned to NUMA 1)"
+sudo -n virsh destroy inference-1 >/dev/null 2>&1 || true
+sudo -n virsh undefine inference-1 --remove-all-storage >/dev/null 2>&1 || true
 sudo -E virt-install \
   --virt-type kvm \
   --name inference-1 \
