@@ -17,10 +17,17 @@ MAX_RETRIES=40
 RETRY_INTERVAL=15
 for i in $(seq 1 $MAX_RETRIES); do
     echo "[Bootstrap] Attempt $i of $MAX_RETRIES..."
-    if sudo -E ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" bootstrap --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}"; then
+    # Capture both stdout and stderr to check for AlreadyExists error
+    if BOOTSTRAP_OUT=$(sudo -E ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" bootstrap --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}" 2>&1); then
         echo "[✓] Bootstrap command accepted."
         break
     else
+        if echo "${BOOTSTRAP_OUT}" | grep -q "AlreadyExists"; then
+            echo "[✓] Bootstrap already in progress or completed (AlreadyExists)."
+            break
+        fi
+        
+        echo "[!] Bootstrap error: ${BOOTSTRAP_OUT}"
         if [ $i -eq $MAX_RETRIES ]; then
             echo "[!] Bootstrap failed after $MAX_RETRIES attempts."
             exit 1
