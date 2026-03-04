@@ -24,19 +24,19 @@ sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443
 --output "${TALOS_CONFIG}" \
 --force 
 
-echo "Creating minimal registry patch (matching test-build)..."
-cat > /tmp/basic-patch.yaml <<EOF
-machine:
-  registries:
-    mirrors:
-      "*":
-        endpoints:
-          - http://${REGISTRY}
-EOF
-
-echo "Applying minimal registry patch to controlplane.yaml and worker.yaml..."
+echo "Applying global patches (machine-patches.yaml and cluster-patches.yaml) to controlplane.yaml and worker.yaml..."
 for f in "controlplane.yaml" "worker.yaml"; do
-    sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" --patch @/tmp/basic-patch.yaml -o "${TALOS_CONFIG}/$f.patched"
+    # Strip any extra documents (like HostnameConfig) that cause validation conflicts with static hostnames
+    sudo sed -n '1,/^---$/p' "${TALOS_CONFIG}/$f" | grep -v '^---$' > "/tmp/$f.stripped"
+    sudo mv "/tmp/$f.stripped" "${TALOS_CONFIG}/$f"
+    
+    # Apply global site configurations (NTP, nameservers, VIP, registry mirrors, extra manifests, etc.)
+    # machine-patches.yaml: Site-wide machine settings
+    # cluster-patches.yaml: Site-wide cluster settings (VIP, manifests)
+    sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
+        --patch @${SETUP_ROOT}/configs/machine-patches.yaml \
+        --patch @${SETUP_ROOT}/configs/cluster-patches.yaml \
+        -o "${TALOS_CONFIG}/$f.patched"
     sudo mv "${TALOS_CONFIG}/$f.patched" "${TALOS_CONFIG}/$f"
 done
 
