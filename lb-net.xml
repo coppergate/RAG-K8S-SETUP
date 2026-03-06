@@ -1,0 +1,5 @@
+<network>
+  <name>lb-net</name>
+  <forward mode='bridge'/>
+  <bridge name='br-app'/>
+</network>

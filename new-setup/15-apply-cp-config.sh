@@ -50,7 +50,7 @@ i=0
 for ip in "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"; do
     if [ -n "$ip" ]; then
         echo "Applying to $ip (with node patch configs/patch-control-${i}.yaml)..."
-        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --endpoints "$ip" --file "${TALOS_CONFIG}/controlplane.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-control-${i}.yaml"
+        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --file "${TALOS_CONFIG}/controlplane.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-control-${i}.yaml"
         i=$((i+1))
     fi
 done

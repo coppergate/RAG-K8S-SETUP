@@ -76,10 +76,17 @@ data:
 EOF
 
 # NOTE: The 'nvidia-talos-validation-fix' DaemonSet is REQUIRED on Talos Linux.
-# Even with toolkit.enabled=false, the GPU Operator's device plugin pods include
-# an init container that waits for '/run/nvidia/validations/toolkit-ready'.
-# Since Talos uses an immutable system extension for the toolkit, it does not
-# create this file automatically. This DaemonSet provides that signal.
+# Why:
+# 1) GPU Operator validators look for readiness files in /run/nvidia/validations.
+# 2) Driver validation expects binaries/libs under /run/nvidia/driver (container-style layout).
+# 3) On Talos (with system extensions), NVIDIA userspace lives under /usr/local
+#    (e.g. /usr/local/bin/nvidia-smi and /usr/local/glibc/usr/lib/libnvidia-ml.so.1).
+#
+# To avoid validator loops after Talos image upgrades, this DaemonSet continuously:
+# - maintains *-ready marker files under /run/nvidia/validations
+# - maps Talos host paths into /run/nvidia/driver via symlinks:
+#     /run/nvidia/driver/usr/bin   -> /host/usr/local/bin
+#     /run/nvidia/driver/usr/lib64 -> /host/usr/local/glibc/usr/lib
 
 echo "[GPU-OP] Applying Talos-specific Validation Fix DaemonSet..."
 ${KUBECTL} apply -n "${NAMESPACE}" -f - <<EOF
@@ -106,14 +113,33 @@ spec:
       containers:
       - name: validation-fix
         image: busybox
-        command: ["sh", "-c", "mkdir -p /run/nvidia/validations && touch /run/nvidia/validations/driver-ready && touch /run/nvidia/validations/toolkit-ready && touch /run/nvidia/validations/cuda-ready && sleep infinity"]
+        command:
+        - sh
+        - -c
+        - |
+          while true; do
+            mkdir -p /run/nvidia/validations /run/nvidia/driver/usr
+            ln -sfn /host/usr/local/bin /run/nvidia/driver/usr/bin
+            ln -sfn /host/usr/local/glibc/usr/lib /run/nvidia/driver/usr/lib64
+            touch /run/nvidia/validations/driver-ready
+            touch /run/nvidia/validations/toolkit-ready
+            touch /run/nvidia/validations/cuda-ready
+            sleep 30
+          done
         volumeMounts:
         - name: run-nvidia
           mountPath: /run/nvidia
+        - name: host-root
+          mountPath: /host
+          readOnly: true
       volumes:
       - name: run-nvidia
         hostPath:
           path: /run/nvidia
+          type: DirectoryOrCreate
+      - name: host-root
+        hostPath:
+          path: /
 EOF
 
 # If a standalone 'node-feature-discovery' namespace exists, relax PSA there as well (best-effort)
@@ -144,6 +170,13 @@ fi
 echo "[GPU-OP] Adding/updating NVIDIA Helm repo..."
 "${HELM_BIN}" repo add nvidia https://nvidia.github.io/gpu-operator >/dev/null 2>&1 || true
 "${HELM_BIN}" repo update >/dev/null 2>&1 || true
+
+echo "[GPU-OP] Removing legacy NVIDIA standalone releases to avoid duplicate DaemonSets (best effort)..."
+for legacy_release in nvidia-device-plugin dcgm-exporter; do
+  if "${HELM_BIN}" -n "${NAMESPACE}" status "${legacy_release}" >/dev/null 2>&1; then
+    "${HELM_BIN}" -n "${NAMESPACE}" uninstall "${legacy_release}" || true
+  fi
+done
 
 echo "[GPU-OP] Installing/Upgrading GPU Operator (Talos-aware: driver.enabled=false, toolkit.enabled=false)..."
 set -x
