@@ -38,7 +38,7 @@ get_server_version() {
   local bin
   local out server
 
-  for bin in "/home/k8s/kube/kubectl" $(command -v kubectl 2>/dev/null || true); do
+  for bin in "/home/k8s/kube/kubectl" "${SETUP_ROOT}/talos/kubectl" $(command -v kubectl 2>/dev/null || true); do
     [ -x "$bin" ] || continue
     # Try short output first
     out=$("$bin" version --short --kubeconfig "${KUBECONFIG}" 2>/dev/null || true)
@@ -62,7 +62,55 @@ get_server_version() {
 get_client_version() {
   local bin="$1"
   [ -x "$bin" ] || return 1
-  "$bin" version --client --short 2>/dev/null | sed -n 's/^Client Version: \(v[0-9]\+\.[0-9]\+\.[0-9]\+\).*$/\1/p'
+  local out ver
+  # Try --short (deprecated but fast)
+  out=$("$bin" version --client --short 2>/dev/null || true)
+  ver=$(printf "%s" "$out" | sed -n 's/^Client Version: \(v[0-9]\+\.[0-9]\+\.[0-9]\+\).*$/\1/p')
+  if [ -n "$ver" ]; then
+    echo "$ver"
+    return 0
+  fi
+  # Fallback to JSON
+  out=$("$bin" version --client -o json 2>/dev/null || true)
+  ver=$(printf "%s" "$out" | tr -d '\n' | sed -E 's/.*"gitVersion"\s*:\s*"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+  if [ -n "$ver" ]; then
+    echo "$ver"
+    return 0
+  fi
+  return 1
+}
+
+# Helper: try to extract kubectl from a container image
+extract_from_image() {
+  local version="$1"
+  local target="$2"
+  # Try local registry first if configured, else try common images
+  local images=(
+    "${REGISTRY:-hierophant.hierocracy.home:5000}/kubectl:${version}"
+    "bitnami/kubectl:${version}"
+    "registry.k8s.io/kubectl:${version}"
+  )
+
+  if ! command -v podman >/dev/null 2>&1; then
+    return 1
+  fi
+
+  for img in "${images[@]}"; do
+    echo "[kubectl-sync] Checking for image: ${img}"
+    if podman image exists "${img}" >/dev/null 2>&1 || podman pull "${img}" >/dev/null 2>&1; then
+      echo "[kubectl-sync] Extracting kubectl from ${img}..."
+      local tmp_cid
+      tmp_cid=$(podman create "${img}" 2>/dev/null) || continue
+      if podman cp "${tmp_cid}:/usr/local/bin/kubectl" "$target" >/dev/null 2>&1 || \
+         podman cp "${tmp_cid}:/bin/kubectl" "$target" >/dev/null 2>&1 || \
+         podman cp "${tmp_cid}:/kubectl" "$target" >/dev/null 2>&1; then
+        podman rm "$tmp_cid" >/dev/null 2>&1
+        [ -s "$target" ] && return 0
+      fi
+      podman rm "$tmp_cid" >/dev/null 2>&1
+    fi
+  done
+  return 1
 }
 
 DESIRED_VERSION="${KUBECTL_VERSION:-}"
@@ -93,16 +141,38 @@ echo "[kubectl-sync] Installing kubectl ${DESIRED_VERSION} (current: ${CURRENT_V
 
 TMP_FILE=$(mktemp)
 TARGET_FILE="${KUBE_ROOT}/kubectl.${DESIRED_VERSION}"
-URL="https://dl.k8s.io/release/${DESIRED_VERSION}/bin/linux/amd64/kubectl"
 
-echo "[kubectl-sync] Downloading: ${URL}"
-if ! curl -fL --retry 3 --connect-timeout 10 -o "$TMP_FILE" "$URL"; then
-  echo "ERROR: failed to download kubectl ${DESIRED_VERSION} from ${URL}" >&2
-  rm -f "$TMP_FILE"
-  exit 1
+# Check if the project's talos/kubectl matches the desired version
+PROJECT_KUBECTL="${SETUP_ROOT}/talos/kubectl"
+if [ -x "$PROJECT_KUBECTL" ]; then
+  PROJECT_VER=$(get_client_version "$PROJECT_KUBECTL" || true)
+  if [ "$PROJECT_VER" = "$DESIRED_VERSION" ]; then
+    echo "[kubectl-sync] Using project binary from ${PROJECT_KUBECTL}"
+    cp "$PROJECT_KUBECTL" "$TARGET_FILE"
+    chmod 0755 "$TARGET_FILE"
+  fi
 fi
 
-install -m 0755 "$TMP_FILE" "$TARGET_FILE"
+# If not found in project, try extracting from container image
+if [ ! -s "$TARGET_FILE" ]; then
+  if extract_from_image "${DESIRED_VERSION}" "$TARGET_FILE"; then
+    echo "[kubectl-sync] Extracted from image."
+    chmod 0755 "$TARGET_FILE"
+  fi
+fi
+
+# Fallback to internet download
+if [ ! -s "$TARGET_FILE" ]; then
+  URL="https://dl.k8s.io/release/${DESIRED_VERSION}/bin/linux/amd64/kubectl"
+  echo "[kubectl-sync] Downloading: ${URL}"
+  if ! curl -fL --retry 3 --connect-timeout 10 -o "$TMP_FILE" "$URL"; then
+    echo "ERROR: failed to download kubectl ${DESIRED_VERSION} from ${URL}" >&2
+    rm -f "$TMP_FILE"
+    exit 1
+  fi
+  install -m 0755 "$TMP_FILE" "$TARGET_FILE"
+fi
+
 rm -f "$TMP_FILE"
 
 # Atomically switch the symlink to new version

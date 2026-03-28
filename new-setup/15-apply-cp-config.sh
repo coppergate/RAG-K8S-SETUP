@@ -10,8 +10,7 @@ source "${SETUP_ROOT}/new-setup/config-env.sh"
 source "${SETUP_ROOT}/new-setup/config-endpoints.sh"
 
 echo "generating the configurations (BASICS MODE)"
-INSTALLER_IMAGE="hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4"
-REGISTRY="hierophant.hierocracy.home:5000"
+INSTALLER_IMAGE="${INSTALLER_IMAGE_BASE}/installer-control-worker:v1.12.4"
 
 # Clean old configs to ensure fresh start
 sudo rm -rf "${TALOS_CONFIG}"
