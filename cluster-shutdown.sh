@@ -17,6 +17,10 @@ REPLICA_FILE="cluster-replicas.state"
 echo "Saving current replica counts to $REPLICA_FILE..."
 rm -f "$REPLICA_FILE"
 
+# 0. Cleanup admission controllers that might block restart
+echo "Step 0: Cleaning up admission controllers..."
+$KUBECTL delete mutatingwebhookconfiguration k8tz --ignore-not-found
+
 # Function to wait for resources to scale to 0
 wait_for_scale_zero() {
     local ns=$1
@@ -43,13 +47,60 @@ wait_for_scale_zero() {
     return 1
 }
 
-# 1. Identify and scale down non-rook-ceph CRs
+# Function to wait for all pods in a namespace to be gone (excluding DaemonSets)
+wait_for_ns_pods_gone() {
+    local ns=$1
+    local timeout=120
+    local elapsed=0
+    echo "Waiting for all pods in namespace $ns to be fully terminated..."
+    while [ $elapsed -lt $timeout ]; do
+        local pod_count=$($KUBECTL get pods -n "$ns" --no-headers 2>/dev/null | grep -vE "DaemonSet|Completed" | wc -l)
+        if [ "$pod_count" -eq 0 ]; then
+            echo "All pods in $ns are gone."
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    echo "Warning: Timeout waiting for pods in $ns to be gone."
+    return 1
+}
+
+# 1. Identify and scale down non-rook-ceph CRs (Priority Order: Apps -> Bus -> Infra)
 echo "Step 1: Scaling down non-rook-ceph resources..."
 
-# Get all namespaces except rook-ceph and kube-system
-NAMESPACES=$($KUBECTL get ns -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -vE 'rook-ceph|kube-system')
+# Define priority order for shutdown
+# Group 1: High priority applications (Stop these FIRST)
+PRIORITY_1="rag-system llms-ollama build-pipeline"
+# Group 2: Supporting applications and monitoring
+PRIORITY_2="monitoring headlamp kubernetes-dashboard container-registry"
+# Group 3: Bus and Middleware (Stop these AFTER applications)
+PRIORITY_3="apache-pulsar timescaledb cnpg-system"
+# Group 4: Core cluster infrastructure (Stop these LAST)
+PRIORITY_4="cert-manager olm traefik purelb k8tz gpu-operator metrics-server"
 
-for ns in $NAMESPACES; do
+# Get all current namespaces
+ALL_NS=$($KUBECTL get ns -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n')
+
+# Build the prioritized list
+FINAL_NS_LIST=""
+for ns in $PRIORITY_1 $PRIORITY_2 $PRIORITY_3 $PRIORITY_4; do
+    if echo "$ALL_NS" | grep -qx "$ns"; then
+        FINAL_NS_LIST="$FINAL_NS_LIST $ns"
+    fi
+done
+
+# Exclude list for the remaining catch-all loop
+# We exclude the priority ones already processed and system ones
+EXCLUDE_PATTERN="rook-ceph|kube-system|talos-system|node-feature-discovery"
+# Add priority namespaces to exclude list to avoid duplicates
+P_LIST=$(echo $PRIORITY_1 $PRIORITY_2 $PRIORITY_3 $PRIORITY_4 | tr ' ' '|')
+EXCLUDE_PATTERN="$EXCLUDE_PATTERN|$P_LIST"
+
+REMAINING_NS=$(echo "$ALL_NS" | grep -vE "$EXCLUDE_PATTERN")
+FINAL_NS_LIST="$FINAL_NS_LIST $REMAINING_NS"
+
+for ns in $FINAL_NS_LIST; do
     # Find all Deployments, StatefulSets, and CNPG Clusters in this namespace
     RESOURCES=$($KUBECTL get deployments,statefulsets,clusters.postgresql.cnpg.io -n "$ns" -o name 2>/dev/null)
     
@@ -67,14 +118,17 @@ for ns in $NAMESPACES; do
             wait_for_scale_zero "$ns" "$res"
         fi
     done
+    
+    # Ensure pods are actually terminated to trigger unmounts while storage is still up
+    wait_for_ns_pods_gone "$ns"
 done
 
-# 2. Scale down rook-ceph resources
-echo "Step 2: Scaling down rook-ceph resources..."
+# 2. Quiesce Ceph and Drain Nodes
+echo "Step 2: Quiescing Ceph and Draining nodes..."
 
 ROOK_NS="rook-ceph"
 
-# 2a. Stop rook-ceph osd (set flags) BEFORE scaling down components
+# 2a. Stop rook-ceph osd (set flags) BEFORE draining or scaling down components
 echo "Setting ceph maintenance flags..."
 # Function to run ceph command (prefer kubectl rook-ceph plugin)
 run_ceph_cmd() {
@@ -145,7 +199,45 @@ for flag in noout nobackfill norecover noscrub nodeep-scrub; do
     run_ceph_cmd "osd set $flag"
 done
 
-# 2b. Now scale down rook components
+# 2b. Drain all nodes while storage is still available
+echo "Draining all nodes..."
+
+# Handle PDBs that might block draining during shutdown
+echo "Temporarily deleting non-system PDBs to prevent drain blocks..."
+PDBS=$($KUBECTL get pdb -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | grep -vE 'kube-system|talos-system|rook-ceph')
+while read -r ns name; do
+    if [ -n "$ns" ] && [ -n "$name" ]; then
+        echo "Deleting PDB $name in namespace $ns..."
+        $KUBECTL delete pdb "$name" -n "$ns" --timeout=10s
+    fi
+done <<< "$PDBS"
+
+NODES=$($KUBECTL get nodes -o name)
+for node in $NODES; do
+    echo "Draining $node..."
+    # Increase timeout and handle daemonsets more aggressively if needed
+    if ! $KUBECTL drain "$node" --ignore-daemonsets --delete-emptydir-data --force --timeout=180s; then
+        echo "Warning: Drain failed for $node. Checking for remaining pods..."
+        # List remaining pods for debugging
+        $KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/}
+        
+        # If there are still pods, try force deleting them (except for daemonsets)
+        echo "Attempting to force delete remaining pods on $node (excluding daemonsets)..."
+        REMAINING_PODS=$($KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/} -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.metadata.ownerReferences[0].kind}{"\n"}{end}' | grep -v "DaemonSet")
+        while read -r pns pname pkind; do
+            if [ -n "$pns" ] && [ -n "$pname" ]; then
+                echo "Force deleting pod $pname in $pns..."
+                $KUBECTL delete pod "$pname" -n "$pns" --force --grace-period=0 --timeout=10s
+            fi
+        done <<< "$REMAINING_PODS"
+        echo "Proceeding with shutdown sequence."
+    fi
+done
+
+# 3. Scale down rook-ceph resources
+echo "Step 3: Scaling down rook-ceph resources..."
+
+# 3a. Now scale down rook components
 # Order: others -> osd -> mon
 ROOK_DEPLOYS=$($KUBECTL get deployments -n "$ROOK_NS" -o name)
 ROOK_STATEFULSETS=$($KUBECTL get statefulsets -n "$ROOK_NS" -o name)
@@ -183,42 +275,6 @@ for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
         echo "Scaling down rook component: $res..."
         $KUBECTL scale "$res" -n "$ROOK_NS" --replicas=0
         wait_for_scale_zero "$ROOK_NS" "$res"
-    fi
-done
-
-# 3. Drain all nodes
-echo "Step 3: Draining all nodes..."
-
-# Handle PDBs that might block draining during shutdown
-echo "Temporarily deleting non-system PDBs to prevent drain blocks..."
-PDBS=$($KUBECTL get pdb -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | grep -vE 'kube-system|talos-system|rook-ceph')
-while read -r ns name; do
-    if [ -n "$ns" ] && [ -n "$name" ]; then
-        echo "Deleting PDB $name in namespace $ns..."
-        $KUBECTL delete pdb "$name" -n "$ns" --timeout=10s
-    fi
-done <<< "$PDBS"
-
-NODES=$($KUBECTL get nodes -o name)
-for node in $NODES; do
-    echo "Draining $node..."
-    # Increase timeout and handle daemonsets more aggressively if needed
-    if ! $KUBECTL drain "$node" --ignore-daemonsets --delete-emptydir-data --force --timeout=180s; then
-        echo "Warning: Drain failed for $node. Checking for remaining pods..."
-        # List remaining pods for debugging
-        $KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/}
-        
-        # If there are still pods, try force deleting them (except for daemonsets)
-        echo "Attempting to force delete remaining pods on $node (excluding daemonsets)..."
-        REMAINING_PODS=$($KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/} -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.metadata.ownerReferences[0].kind}{"\n"}{end}' | grep -v "DaemonSet")
-        while read -r pns pname pkind; do
-            if [ -n "$pns" ] && [ -n "$pname" ]; then
-                echo "Force deleting pod $pname in $pns..."
-                $KUBECTL delete pod "$pname" -n "$pns" --force --grace-period=0 --timeout=10s
-            fi
-        done <<< "$REMAINING_PODS"
-
-        echo "Proceeding with VM shutdown anyway."
     fi
 done
 

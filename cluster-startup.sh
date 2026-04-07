@@ -52,6 +52,10 @@ if [ $API_ELAPSED -ge $MAX_API_WAIT ]; then
 fi
 echo " API is up."
 
+# 1.5. Prevent admission controller deadlock (k8tz)
+echo "Step 1.5: Removing potentially blocking admission controllers..."
+$KUBECTL delete mutatingwebhookconfiguration k8tz --ignore-not-found
+
 # Wait for nodes to be Ready
 echo "Waiting for nodes to be Ready..."
 until [ $($KUBECTL get nodes | grep -c " Ready") -ge 3 ]; do
@@ -159,9 +163,9 @@ run_ceph_cmd() {
         $KUBECTL scale "$res" -n "$ns" --replicas="$count"
     done
     
-    # 3e. Everything else
+    # 3e. Everything else (Restore in REVERSE order of shutdown)
     echo "Restoring all other resources..."
-    grep -v "$ROOK_NS" "$REPLICA_FILE" | while read -r ns res count; do
+    grep -v "$ROOK_NS" "$REPLICA_FILE" | tac | while read -r ns res count; do
         echo "Restoring $res in $ns to $count..."
         $KUBECTL scale "$res" -n "$ns" --replicas="$count"
     done
@@ -172,6 +176,16 @@ run_ceph_cmd() {
     run_ceph_cmd "health"
 else
     echo "Warning: $REPLICA_FILE not found. Skipping scale restoration."
+fi
+
+# 4. Final adjustments
+echo "Step 4: Final adjustments..."
+if command -v helm &> /dev/null; then
+    echo "Restoring k8tz admission controller..."
+    # k8tz Helm release is in 'default' namespace but pods/resources are in 'k8tz'
+    helm upgrade --install k8tz k8tz/k8tz --set timezone=Europe/London --namespace default
+else
+    echo "Warning: helm not found. Cannot restore k8tz admission controller."
 fi
 
 echo "Cluster startup complete."
