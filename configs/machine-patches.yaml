@@ -26,7 +26,7 @@ machine:
             localEnabled: true
     install:
         disk: /dev/vda
-        image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
+        image: 10.0.0.1:5000/siderolabs/installer-control-worker:v1.12.4
         wipe: true
     kubelet:
         extraArgs:
@@ -46,10 +46,13 @@ machine:
         mirrors:
             "*":
                 endpoints:
-                    - https://hierophant.hierocracy.home:5000
+                    - https://10.0.0.1:5000
+            "10.0.0.1:5000":
+                endpoints:
+                    - https://10.0.0.1:5000
             "hierophant.hierocracy.home:5000":
                 endpoints:
-                    - https://hierophant.hierocracy.home:5000
+                    - https://10.0.0.1:5000
             "registry.container-registry.svc.cluster.local:5000":
                 endpoints:
                     - https://172.20.1.26:5000

@@ -1,10 +1,6 @@
 machine:
   network:
     extraHostEntries:
-      - ip: 10.0.0.1
-        aliases:
-          - hierophant.hierocracy.home
-          - hierophant
       - ip: 172.20.1.26
         aliases:
           - registry.hierocracy.home
@@ -13,10 +9,10 @@ machine:
     mirrors:
       "10.0.0.1:5000":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
       "hierophant.hierocracy.home:5000":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
       "registry.hierocracy.home:5000":
         endpoints:
           - "https://registry.hierocracy.home:5000"
@@ -25,23 +21,23 @@ machine:
           - "https://registry.container-registry.svc.cluster.local:5000"
       "docker.io":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
           - "https://registry-1.docker.io"
       "quay.io":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
           - "https://quay.io"
       "registry.k8s.io":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
           - "https://registry.k8s.io"
       "ghcr.io":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
           - "https://ghcr.io"
       "*":
         endpoints:
-          - "https://hierophant.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
     config:
       "10.0.0.1:5000":
         tls:
