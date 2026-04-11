@@ -63,14 +63,7 @@ get_client_version() {
   local bin="$1"
   [ -x "$bin" ] || return 1
   local out ver
-  # Try --short (deprecated but fast)
-  out=$("$bin" version --client --short 2>/dev/null || true)
-  ver=$(printf "%s" "$out" | sed -n 's/^Client Version: \(v[0-9]\+\.[0-9]\+\.[0-9]\+\).*$/\1/p')
-  if [ -n "$ver" ]; then
-    echo "$ver"
-    return 0
-  fi
-  # Fallback to JSON
+
   out=$("$bin" version --client -o json 2>/dev/null || true)
   ver=$(printf "%s" "$out" | tr -d '\n' | sed -E 's/.*"gitVersion"\s*:\s*"(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
   if [ -n "$ver" ]; then
