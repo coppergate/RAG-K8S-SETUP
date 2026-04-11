@@ -24,9 +24,16 @@ fi
 
 if ! is_step_done "setup-network"; then
     echo "[2/9] Setting up network..."
+    ${NEW_SETUP_DIR}/00-init-network.sh
     ${NEW_SETUP_DIR}/02-setup-network.sh
     ${NEW_SETUP_DIR}/07-config-vm-net.sh
     mark_step_done "setup-network"
+fi
+
+if ! is_step_done "setup-registry"; then
+    echo "[2.5/9] Setting up bootstrap registry..."
+    ${NEW_SETUP_DIR}/08-setup-bootstrap-registry.sh
+    mark_step_done "setup-registry"
 fi
 
 if ! is_step_done "build-cp-vms"; then

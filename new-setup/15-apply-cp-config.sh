@@ -39,6 +39,7 @@ for f in "controlplane.yaml" "worker.yaml"; do
     sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
         --patch @${SETUP_ROOT}/configs/machine-patches.yaml \
         --patch @${SETUP_ROOT}/configs/cluster-patches.yaml \
+        --patch @${SETUP_ROOT}/configs/talos-registry-patch.yaml \
         -o "${TALOS_CONFIG}/$f.patched"
     sudo mv "${TALOS_CONFIG}/$f.patched" "${TALOS_CONFIG}/$f"
 done

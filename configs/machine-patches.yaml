@@ -46,10 +46,10 @@ machine:
         mirrors:
             "*":
                 endpoints:
-                    - http://hierophant.hierocracy.home:5000
+                    - https://hierophant.hierocracy.home:5000
             "hierophant.hierocracy.home:5000":
                 endpoints:
-                    - http://hierophant.hierocracy.home:5000
+                    - https://hierophant.hierocracy.home:5000
             "registry.container-registry.svc.cluster.local:5000":
                 endpoints:
-                    - http://172.20.1.26:5000
+                    - https://172.20.1.26:5000
