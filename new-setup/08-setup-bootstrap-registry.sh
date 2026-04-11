@@ -16,10 +16,25 @@ source "${SETUP_ROOT}/new-setup/config-env.sh"
 # 1. Ensure the registry container is running (via Quadlet/systemd)
 echo "[REGISTRY] Ensuring bootstrap registry service is running..."
 # Quadlet file should be at /home/junie/.config/containers/systemd/registry.container
-# We assume it's already there or managed by other means.
-# If not, we can at least try to start it.
-systemctl --user daemon-reload || true
-systemctl --user enable --now registry.service || true
+
+# Ensure systemd user bus accessibility (handles non-interactive/sudo/root runs)
+REGISTRY_USER="junie"
+REGISTRY_UID=$(id -u ${REGISTRY_USER} 2>/dev/null || id -u)
+
+if [ "$(id -u)" -eq 0 ]; then
+    # Running as root: Manage junie's user service
+    echo "[REGISTRY] Running systemctl --user as ${REGISTRY_USER}..."
+    runuser -l ${REGISTRY_USER} -c "export XDG_RUNTIME_DIR=/run/user/${REGISTRY_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${REGISTRY_UID}/bus; systemctl --user daemon-reload; systemctl --user enable --now registry.service" || true
+else
+    # Running as non-root (hopefully junie)
+    # Ensure environment is set even if in a non-interactive/broken session
+    if [ -z "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+    fi
+    systemctl --user daemon-reload || true
+    systemctl --user enable --now registry.service || true
+fi
 
 # Check if it's actually responding
 echo "[REGISTRY] Verifying registry connectivity..."
