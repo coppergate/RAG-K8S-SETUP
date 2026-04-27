@@ -9,6 +9,8 @@ export KUBE_ROOT="${CONFIGURATION_ROOT}/kube"
 export TALOS_CONFIG="${TALOS_ROOT}/config"
 export KUBE_CONFIG="${KUBE_ROOT}/config"
 export TALOSCONFIG="${TALOS_CONFIG}/talosconfig"
+export REGISTRY="hierophant.hierocracy.home:5000"
+export INSTALLER_IMAGE_BASE="${REGISTRY}/siderolabs"
 
 #############################################
 # Assert talosctl client version is v1.12.4 #

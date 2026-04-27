@@ -1,10 +1,9 @@
 #!/bin/bash
-
 # ==============================================================================
 # CLUSTER SHUTDOWN SCRIPT
+# Version: 2.3.0
 # MUST be executed on 'hierophant'
 # ==============================================================================
-
 # Ensure we have kubectl and kubeconfig
 KUBECTL="/home/k8s/kube/kubectl"
 export KUBECONFIG="/home/k8s/kube/config/kubeconfig"
@@ -13,9 +12,15 @@ if [ ! -f "$KUBECTL" ]; then
     exit 1
 fi
 
-REPLICA_FILE="cluster-replicas.state"
-echo "Saving current replica counts to $REPLICA_FILE..."
-rm -f "$REPLICA_FILE"
+REPLICA_FILE="/home/k8s/kube/cluster-replicas.state"
+TEMP_REPLICA_FILE="/tmp/cluster-replicas.state.$$"
+
+echo "Scanning for active replicas (saving to $TEMP_REPLICA_FILE)..."
+rm -f "$TEMP_REPLICA_FILE"
+
+# 0. Cleanup admission controllers that might block restart
+echo "Step 0: Cleaning up admission controllers..."
+$KUBECTL delete mutatingwebhookconfiguration k8tz --ignore-not-found
 
 # Function to wait for resources to scale to 0
 wait_for_scale_zero() {
@@ -23,36 +28,43 @@ wait_for_scale_zero() {
     local res=$2
     local timeout=60
     local elapsed=0
-    
-    echo "Waiting for $res in namespace $ns to scale to 0..."
-    while [ $elapsed -lt $timeout ]; do
-        local current_replicas
-        if [[ "$res" =~ "clusters.postgresql.cnpg.io" ]]; then
-            current_replicas=$($KUBECTL get "$res" -n "$ns" -o jsonpath='{.status.instances}' 2>/dev/null)
-        else
-            current_replicas=$($KUBECTL get "$res" -n "$ns" -o jsonpath='{.status.replicas}' 2>/dev/null)
-        fi
-        if [ -z "$current_replicas" ] || [ "$current_replicas" -eq 0 ]; then
-            echo "$res scaled to 0."
-            return 0
-        fi
+    until [ $($KUBECTL get "$res" -n "$ns" -o jsonpath='{.status.replicas // 0}' 2>/dev/null) -eq 0 ] || [ $elapsed -ge $timeout ]; do
         sleep 2
         elapsed=$((elapsed + 2))
     done
-    echo "Warning: Timeout waiting for $res to scale to 0."
-    return 1
 }
 
-# 1. Identify and scale down non-rook-ceph CRs
-echo "Step 1: Scaling down non-rook-ceph resources..."
+# Function to wait for all pods in a namespace to be gone
+wait_for_ns_pods_gone() {
+    local ns=$1
+    local timeout=120
+    local elapsed=0
+    echo "Waiting for all pods in namespace $ns to terminate..."
+    until [ $($KUBECTL get pods -n "$ns" --no-headers 2>/dev/null | wc -l) -eq 0 ] || [ $elapsed -ge $timeout ]; do
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+}
 
-# Get all namespaces except rook-ceph and kube-system
-NAMESPACES=$($KUBECTL get ns -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -vE 'rook-ceph|kube-system')
+# 1. Identify and scale down non-rook-ceph resources (Priority Order: Apps -> Bus -> Infrastructure)
+echo "Step 1: Identifying and scaling down resources..."
+# We exclude system namespaces and rook-ceph (handled separately)
+EXCLUDE_PATTERN="kube-system|talos-system|rook-ceph|monitoring|k8tz|container-registry"
+ALL_NS=$($KUBECTL get namespaces -o name | cut -d'/' -f2)
 
-for ns in $NAMESPACES; do
+# Priority 1: Apps & DBs
+APPS_NS="rag-system timescaledb qdrant"
+# Priority 2: Message Bus
+BUS_NS="apache-pulsar"
+# Priority 3: Infrastructure (Others)
+FINAL_NS_LIST="$APPS_NS $BUS_NS"
+REMAINING_NS=$(echo "$ALL_NS" | grep -vE "$EXCLUDE_PATTERN|rag-system|timescaledb|qdrant|apache-pulsar")
+FINAL_NS_LIST="$FINAL_NS_LIST $REMAINING_NS"
+
+for ns in $FINAL_NS_LIST; do
     # Find all Deployments, StatefulSets, and CNPG Clusters in this namespace
     RESOURCES=$($KUBECTL get deployments,statefulsets,clusters.postgresql.cnpg.io -n "$ns" -o name 2>/dev/null)
-    
+
     for res in $RESOURCES; do
         REPLICAS=""
         if [[ "$res" =~ "clusters.postgresql.cnpg.io" ]]; then
@@ -61,49 +73,40 @@ for ns in $NAMESPACES; do
             REPLICAS=$($KUBECTL get "$res" -n "$ns" -o jsonpath='{.spec.replicas}')
         fi
         if [ -n "$REPLICAS" ] && [ "$REPLICAS" -gt 0 ]; then
-            echo "$ns $res $REPLICAS" >> "$REPLICA_FILE"
+            echo "$ns $res $REPLICAS" >> "$TEMP_REPLICA_FILE"
             echo "Scaling down $res in namespace $ns (current: $REPLICAS)..."
             $KUBECTL scale "$res" -n "$ns" --replicas=0
             wait_for_scale_zero "$ns" "$res"
         fi
     done
+
+    # Ensure pods are actually terminated to trigger unmounts while storage is still up
+    wait_for_ns_pods_gone "$ns"
 done
 
-# 2. Scale down rook-ceph resources
-echo "Step 2: Scaling down rook-ceph resources..."
-
+# 2. Quiesce Ceph and Drain Nodes
+echo "Step 2: Quiescing Ceph and Draining nodes..."
 ROOK_NS="rook-ceph"
 
-# 2a. Stop rook-ceph osd (set flags) BEFORE scaling down components
-echo "Setting ceph maintenance flags..."
-# Function to run ceph command (prefer kubectl rook-ceph plugin)
+# Function to run ceph command
 run_ceph_cmd() {
     local cmd=$1
-    # 1. Prefer user-installed krew plugin if available (check common locations)
-    # The plugin is often in ~/.krew/bin which might not be in the path for root/junie.
-    # We check /home/wjones/.krew/bin/kubectl-rook_ceph as it's known to be there.
     local WJONES_PLUGIN="/home/wjones/.krew/bin/kubectl-rook_ceph"
-    
+
     if $KUBECTL rook-ceph --help >/dev/null 2>&1; then
         $KUBECTL rook-ceph ceph -n "$ROOK_NS" $cmd
         return $?
     elif [ -x "$WJONES_PLUGIN" ] && [ "$(/usr/bin/id -u)" -eq 0 ]; then
-        # If we are root and have the plugin path, try using it via kubectl
         $KUBECTL rook-ceph ceph -n "$ROOK_NS" $cmd --plugin-path="/home/wjones/.krew/bin"
         return $?
     fi
-
-    # 2. Fallback to exec into toolbox pod
     local TOOLBOX_POD=$($KUBECTL -n "$ROOK_NS" get pod -l app=rook-ceph-tools -o name | head -n 1)
     if [ -n "$TOOLBOX_POD" ]; then
         $KUBECTL -n "$ROOK_NS" exec "$TOOLBOX_POD" -- ceph --conf /etc/ceph/ceph.conf $cmd
         return $?
     fi
-
-    # 3. Fallback to exec into operator pod
     local op_pod=$($KUBECTL -n "$ROOK_NS" get pod -l app=rook-ceph-operator -o name | head -n 1)
     if [ -n "$op_pod" ]; then
-        # The operator pod needs a specific config path and container
         $KUBECTL -n "$ROOK_NS" exec "$op_pod" -c rook-ceph-operator -- ceph --conf /var/lib/rook/rook-ceph/rook-ceph.config $cmd 2>/dev/null || \
         $KUBECTL -n "$ROOK_NS" exec "$op_pod" -c rook-ceph-operator -- ceph $cmd
         return $?
@@ -115,29 +118,10 @@ run_ceph_cmd() {
 echo "Checking Ceph health before shutdown..."
 CEPH_HEALTH=$(run_ceph_cmd "health")
 echo "Current Ceph status: $CEPH_HEALTH"
-
 if [[ "$CEPH_HEALTH" == *"HEALTH_ERR"* ]]; then
     echo "Warning: Ceph is in HEALTH_ERR state. Shutdown might be risky."
     echo "!!! PROCEEDING WITH CAUTION !!!"
 fi
-
-# Check for PGs
-echo "Checking for clean PGs..."
-PG_STATUS=$(run_ceph_cmd "pg stat")
-echo "PG Status: $PG_STATUS"
-if [[ "$PG_STATUS" != *"active+clean"* ]] && [[ "$PG_STATUS" != *"active+clean+scrubbing"* ]]; then
-    echo "Warning: Not all PGs are active+clean. Waiting 30s for any immediate recovery..."
-    sleep 30
-fi
-
-# Quiesce IO: Check for active watchers (indicates clients still connected)
-echo "Checking for active Ceph clients/watchers..."
-for pool in $(run_ceph_cmd "osd pool ls"); do
-    WATCHERS=$(run_ceph_cmd "osd dump" | grep "pool $pool" -A 5 | grep "watcher")
-    if [ -n "$WATCHERS" ]; then
-        echo "Warning: Active watchers detected on pool $pool. Applications might still be closing handles."
-    fi
-done
 
 # Set flags to prevent rebalancing and data movement during shutdown
 echo "Freezing Ceph state (noout, nobackfill, norecover, noscrub, nodeep-scrub)..."
@@ -145,18 +129,40 @@ for flag in noout nobackfill norecover noscrub nodeep-scrub; do
     run_ceph_cmd "osd set $flag"
 done
 
-# 2b. Now scale down rook components
-# Order: others -> osd -> mon
+# Drain nodes
+echo "Draining all nodes..."
+NODES=$($KUBECTL get nodes -o name)
+for node in $NODES; do
+    echo "Draining $node..."
+    $KUBECTL drain "$node" --ignore-daemonsets --delete-emptydir-data --force --timeout=180s || echo "Warning: Drain failed for $node. Proceeding anyway."
+done
+
+# 3. Scale down rook-ceph resources
+echo "Step 3: Scaling down rook-ceph resources..."
 ROOK_DEPLOYS=$($KUBECTL get deployments -n "$ROOK_NS" -o name)
 ROOK_STATEFULSETS=$($KUBECTL get statefulsets -n "$ROOK_NS" -o name)
 
-# Save all rook replicas first
+# Save all rook replicas first (only if > 0)
 for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     REPLICAS=$($KUBECTL get "$res" -n "$ROOK_NS" -o jsonpath='{.spec.replicas}')
-    echo "$ROOK_NS $res $REPLICAS" >> "$REPLICA_FILE"
+    if [ -n "$REPLICAS" ] && [ "$REPLICAS" -gt 0 ]; then
+        echo "$ROOK_NS $res $REPLICAS" >> "$TEMP_REPLICA_FILE"
+    fi
 done
 
-# Scale down "others" (not mon, osd, or operator)
+# Finalize replica state file BEFORE scaling down rook
+if [ -s "$TEMP_REPLICA_FILE" ]; then
+    echo "Updating $REPLICA_FILE with new replica state..."
+    [ -f "$REPLICA_FILE" ] && cp "$REPLICA_FILE" "$REPLICA_FILE.bak" 2>/dev/null
+    mv "$TEMP_REPLICA_FILE" "$REPLICA_FILE"
+else
+    echo "Warning: No running replicas found. Existing $REPLICA_FILE preserved (if any)."
+    rm -f "$TEMP_REPLICA_FILE"
+fi
+
+# 3b. Now scale down rook components
+# Order: others -> osd -> mon
+echo "Scaling down other rook components..."
 for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     if [[ ! "$res" =~ "mon" ]] && [[ ! "$res" =~ "osd" ]] && [[ ! "$res" =~ "operator" ]]; then
         echo "Scaling down rook component: $res..."
@@ -165,7 +171,7 @@ for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     fi
 done
 
-# Scale down OSDs
+echo "Scaling down OSDs..."
 for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     if [[ "$res" =~ "osd" ]]; then
         echo "Scaling down rook component: $res..."
@@ -174,10 +180,9 @@ for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     fi
 done
 
-# Wait a bit for OSDs to terminate
 sleep 5
 
-# Scale down Mons
+echo "Scaling down Mons..."
 for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     if [[ "$res" =~ "mon" ]]; then
         echo "Scaling down rook component: $res..."
@@ -186,44 +191,11 @@ for res in $ROOK_DEPLOYS $ROOK_STATEFULSETS; do
     fi
 done
 
-# 3. Drain all nodes
-echo "Step 3: Draining all nodes..."
+echo "Scaling down rook-ceph-operator..."
+$KUBECTL scale deployment.apps/rook-ceph-operator -n "$ROOK_NS" --replicas=0 2>/dev/null
 
-# Handle PDBs that might block draining during shutdown
-echo "Temporarily deleting non-system PDBs to prevent drain blocks..."
-PDBS=$($KUBECTL get pdb -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | grep -vE 'kube-system|talos-system|rook-ceph')
-while read -r ns name; do
-    if [ -n "$ns" ] && [ -n "$name" ]; then
-        echo "Deleting PDB $name in namespace $ns..."
-        $KUBECTL delete pdb "$name" -n "$ns" --timeout=10s
-    fi
-done <<< "$PDBS"
-
-NODES=$($KUBECTL get nodes -o name)
-for node in $NODES; do
-    echo "Draining $node..."
-    # Increase timeout and handle daemonsets more aggressively if needed
-    if ! $KUBECTL drain "$node" --ignore-daemonsets --delete-emptydir-data --force --timeout=180s; then
-        echo "Warning: Drain failed for $node. Checking for remaining pods..."
-        # List remaining pods for debugging
-        $KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/}
-        
-        # If there are still pods, try force deleting them (except for daemonsets)
-        echo "Attempting to force delete remaining pods on $node (excluding daemonsets)..."
-        REMAINING_PODS=$($KUBECTL get pods --all-namespaces --field-selector spec.nodeName=${node#node/} -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.metadata.ownerReferences[0].kind}{"\n"}{end}' | grep -v "DaemonSet")
-        while read -r pns pname pkind; do
-            if [ -n "$pns" ] && [ -n "$pname" ]; then
-                echo "Force deleting pod $pname in $pns..."
-                $KUBECTL delete pod "$pname" -n "$pns" --force --grace-period=0 --timeout=10s
-            fi
-        done <<< "$REMAINING_PODS"
-
-        echo "Proceeding with VM shutdown anyway."
-    fi
-done
-
-# 5. Stop all VMs
-echo "Step 5: Stopping all cluster VMs..."
+# 4. Stop all VMs
+echo "Step 4: Stopping all cluster VMs..."
 VMS=("worker-0" "worker-1" "worker-2" "worker-3" "inference-0" "inference-1" "control-0" "control-1" "control-2")
 for vm in "${VMS[@]}"; do
     if sudo virsh dominfo "$vm" &>/dev/null; then
@@ -231,10 +203,6 @@ for vm in "${VMS[@]}"; do
         sudo virsh shutdown "$vm"
     fi
 done
-
-# Finally scale down the operator pod so it's not running when we stop the node
-echo "Scaling down rook-ceph-operator..."
-$KUBECTL scale deployment.apps/rook-ceph-operator -n "$ROOK_NS" --replicas=0 2>/dev/null
 
 echo "Waiting for VMs to shut down (max 5 minutes)..."
 MAX_WAIT=300
@@ -246,12 +214,12 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
             STILL_RUNNING+=("$vm")
         fi
     done
-    
+
     if [ ${#STILL_RUNNING[@]} -eq 0 ]; then
         echo "All VMs shut down successfully."
         break
     fi
-    
+
     echo "Still waiting for: ${STILL_RUNNING[*]} ($ELAPSED/$MAX_WAIT)..."
     sleep 10
     ELAPSED=$((ELAPSED + 10))
@@ -264,5 +232,4 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
         sudo virsh destroy "$vm"
     done
 fi
-
 echo "Cluster shutdown complete."

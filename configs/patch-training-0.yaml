@@ -1,13 +1,11 @@
 machine:
   network:
-    hostname: "training-0"
+    hostname: training-0
   kernel:
     modules:
-      - name: nvidia
-      - name: nvidia_uvm
-      - name: nvidia_drm
-      - name: nvidia_modeset
+    - name: nvidia
+    - name: nvidia_uvm
+    - name: nvidia_drm
+    - name: nvidia_modeset
   install:
-    disk: /dev/vda # The disk used for installations.
     image: factory.talos.dev/metal-installer/60791fa294d313211210655cc0d5fc5bd7a2c726490dabbdbf68f2a60b5a4a6a:v1.11.5
-    wipe: true # Indicates if the installation disk should be wiped at installation time.

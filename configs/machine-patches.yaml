@@ -1,0 +1,58 @@
+machine:
+    network:
+        interfaces:
+            - interface: eth0
+              dhcp: true
+            - interface: eth1
+              dhcp: false
+        searchDomains:
+            - "hierocracy"
+            - "hierocracy.home"
+        nameservers:
+            - "192.168.1.210"
+            - "8.8.8.8"
+            - "1.1.1.1"
+        extraHostEntries:
+            - ip: 192.168.1.101
+              aliases:
+                  - hierophant.hierocracy.home
+                  - hierophant
+    time:
+        servers:
+            - "time.nist.gov"
+    features:
+        stableHostname: false
+        imageCache:
+            localEnabled: true
+    install:
+        disk: /dev/vda
+        image: 10.0.0.1:5000/siderolabs/installer-control-worker:v1.12.4
+        wipe: true
+    kubelet:
+        extraArgs:
+            rotate-server-certificates: "true"
+        nodeIP:
+            validSubnets:
+                - 10.0.0.0/24
+                - 192.168.1.0/24
+                - 172.20.0.0/16
+    files:
+        - content: |
+            [metrics]
+            address = "0.0.0.0:11234"
+          path: /var/cri/conf.d/metrics.toml
+          op: create
+    registries:
+        mirrors:
+            "*":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "10.0.0.1:5000":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "hierophant.hierocracy.home:5000":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "registry.container-registry.svc.cluster.local:5000":
+                endpoints:
+                    - https://172.20.1.26:5000

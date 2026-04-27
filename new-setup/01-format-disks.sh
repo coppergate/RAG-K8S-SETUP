@@ -11,7 +11,9 @@ if ! ip link show enp5s0 &>/dev/null || ! ip link show eno1 &>/dev/null; then
     echo "WARNING: This script is intended to run on the target host (hierophant)."
     read -p "Do you want to continue anyway? (yes/no): " host_resp
     if [[ ! "$host_resp" =~ ^[Yy][Ee][Ss]|[Yy]$ ]]; then
-        exit 1
+        if [ -z "$FRESH_INSTALL" ]; then
+            exit 1
+        fi
     fi
 fi
 
@@ -98,7 +100,11 @@ for part in "${!DISK_MAPPING[@]}"; do
 done
 echo "=========================================="
 echo "WARNING: ALL DATA ON THESE PARTITIONS WILL BE LOST!"
-read -p "Are you sure you want to proceed? (yes/no): " response
+if [ -z "$FRESH_INSTALL" ]; then
+    read -p "Are you sure you want to proceed? (yes/no): " response
+else
+    response="yes"
+fi
 echo ""
 
 if [[ ! "$response" =~ ^[Yy][Ee][Ss]|[Yy]$ ]]; then

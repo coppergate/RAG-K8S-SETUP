@@ -2,11 +2,11 @@
 echo "Verifying host environment..."
 if ! ip link show enp5s0 &>/dev/null || ! ip link show eno1 &>/dev/null; then
     echo "WARNING: This script is intended to run on the target host (hierophant)."
-    echo "Expected interfaces 'enp5s0' and 'eno1' not found."
-    echo "If you are running this from a remote machine (like a dev VM), these changes will NOT apply to the target host."
-    read -p "Do you want to continue anyway? (yes/no): " host_resp
-    if [[ ! "$host_resp" =~ ^[Yy][Ee][Ss]|[Yy]$ ]]; then
-        exit 1
+    if [ -z "$FRESH_INSTALL" ]; then
+        read -p "Do you want to continue anyway? (yes/no): " host_resp
+        if [[ ! "$host_resp" =~ ^[Yy][Ee][Ss]|[Yy]$ ]]; then
+            exit 1
+        fi
     fi
 fi
 

@@ -1,11 +1,9 @@
 machine:
   network:
-    hostname: "inference-1"
+    hostname: inference-1
     interfaces:
-      - interface: eth1
-        addresses:
-          - 172.20.0.121/16
+    - interface: eth1
+      addresses:
+      - 172.20.0.121/16
   install:
-    disk: /dev/vda # The disk used for installations.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-inference:v1.12.4
-    wipe: true

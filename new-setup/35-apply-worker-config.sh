@@ -9,9 +9,12 @@ fi
 source "${SETUP_ROOT}/new-setup/config-env.sh" 
 source "${SETUP_ROOT}/new-setup/config-endpoints.sh"
 
-echo "Applying configuration to worker nodes"
-
-sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig ${TALOSCONFIG} --nodes "${WORKER_IP_0}" --file "${TALOS_CONFIG}/worker.yaml" --config-patch @"${SETUP_ROOT}/configs/patch-worker-0.yaml" --mode reboot
-sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig ${TALOSCONFIG} --nodes "${WORKER_IP_1}" --file "${TALOS_CONFIG}/worker.yaml" --config-patch @"${SETUP_ROOT}/configs/patch-worker-1.yaml" --mode reboot
-sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig ${TALOSCONFIG} --nodes "${WORKER_IP_2}" --file "${TALOS_CONFIG}/worker.yaml" --config-patch @"${SETUP_ROOT}/configs/patch-worker-2.yaml" --mode reboot
-sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig ${TALOSCONFIG} --nodes "${WORKER_IP_3}" --file "${TALOS_CONFIG}/worker.yaml" --config-patch @"${SETUP_ROOT}/configs/patch-worker-3.yaml" --mode reboot
+echo "Applying configuration to worker nodes (with node-specific patches)"
+i=0
+for ip in "${WORKER_IP_0}" "${WORKER_IP_1}" "${WORKER_IP_2}" "${WORKER_IP_3}"; do
+    if [ -n "$ip" ]; then
+        echo "Applying to $ip (with patch configs/patch-worker-${i}.yaml)..."
+        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --endpoints "$ip" --file "${TALOS_CONFIG}/worker.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-worker-${i}.yaml"
+        i=$((i+1))
+    fi
+done
