@@ -22,19 +22,15 @@ machine:
       "docker.io":
         endpoints:
           - "https://10.0.0.1:5000"
-          - "https://registry-1.docker.io"
       "quay.io":
         endpoints:
           - "https://10.0.0.1:5000"
-          - "https://quay.io"
       "registry.k8s.io":
         endpoints:
           - "https://10.0.0.1:5000"
-          - "https://registry.k8s.io"
       "ghcr.io":
         endpoints:
           - "https://10.0.0.1:5000"
-          - "https://ghcr.io"
       "*":
         endpoints:
           - "https://10.0.0.1:5000"

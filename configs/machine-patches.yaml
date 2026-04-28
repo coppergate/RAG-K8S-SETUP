@@ -53,6 +53,18 @@ machine:
             "hierophant.hierocracy.home:5000":
                 endpoints:
                     - https://10.0.0.1:5000
+            "registry.k8s.io":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "ghcr.io":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "docker.io":
+                endpoints:
+                    - https://10.0.0.1:5000
+            "quay.io":
+                endpoints:
+                    - https://10.0.0.1:5000
             "registry.container-registry.svc.cluster.local:5000":
                 endpoints:
                     - https://172.20.1.26:5000

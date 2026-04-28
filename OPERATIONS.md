@@ -9,6 +9,9 @@ This document tracks basic tasks and procedures determined during development to
 - **Registry data**: `/mnt/storage/registry-data` — Docker registry image layers and manifests
 - **VM disk images**: `/var/lib/libvirt/images/` — Talos ISOs (symlinked from shared mount)
 - **Talos/kubectl configs**: `/home/k8s/kube/` — kubeconfig, kubectl binary
+- **Bootstrap Registry**: A local container registry running on **hierophant** (port 5000) to seed Talos installer images and other initial containers. It is managed by `new-setup/08-setup-bootstrap-registry.sh` as a Podman Quadlet service.
+  - **Quadlet**: `/home/junie/.config/containers/systemd/registry.container`
+  - **Firewall**: Must allow port 5000 on the `talos-bridge` interface.
 - **Registry TLS/config**: `/mnt/storage/registry-config/` — config.yml, tls.crt, tls.key
 - **Pre-pulled LLM models**: `/mnt/storage/ollama-models/` — Ollama model blobs and manifests
 - **DO NOT** store large data (container images, registry) on `/home` — it has limited capacity (~143G shared with system)
