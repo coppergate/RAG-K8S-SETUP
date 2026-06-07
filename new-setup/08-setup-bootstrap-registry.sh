@@ -75,7 +75,7 @@ cat <<EOF | sudo -n tee "${QUADLET_DIR}/registry.container" > /dev/null
 [Container]
 Image=registry:2
 ContainerName=registry
-PublishPort=5000:5000
+Network=host
 Volume=${REGISTRY_DATA_DIR}:/var/lib/registry
 Volume=${REGISTRY_CONFIG_DIR}/config.yml:/etc/docker/registry/config.yml
 Volume=${REGISTRY_CONFIG_DIR}/tls.crt:/etc/docker/registry/tls.crt
