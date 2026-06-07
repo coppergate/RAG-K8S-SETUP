@@ -2,6 +2,9 @@ machine:
   network:
     hostname: worker-2
     interfaces:
+    - interface: eth0
+      dhcp: true
     - interface: eth1
+      dhcp: false
       addresses:
       - 172.20.0.112/16

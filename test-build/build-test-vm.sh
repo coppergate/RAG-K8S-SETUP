@@ -48,9 +48,6 @@ if ! sudo -n virsh net-info talos-nat >/dev/null 2>&1; then
 <network>
   <name>talos-nat</name>
   <bridge name="talos-bridge" stp="on" delay="0"/>
-  <forward mode="nat">
-    <nat/>
-  </forward>
   <ip address="10.0.0.1" netmask="255.255.255.0">
     <dhcp>
       <range start="10.0.0.20" end="10.0.0.30"/>

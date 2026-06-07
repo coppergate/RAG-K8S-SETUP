@@ -9,10 +9,10 @@ machine:
     mirrors:
       "10.0.0.1:5000":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "hierophant.hierocracy.home:5000":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "registry.hierocracy.home:5000":
         endpoints:
           - "https://registry.hierocracy.home:5000"
@@ -21,19 +21,19 @@ machine:
           - "https://registry.container-registry.svc.cluster.local:5000"
       "docker.io":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "quay.io":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "registry.k8s.io":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "ghcr.io":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
       "*":
         endpoints:
-          - "https://10.0.0.1:5000"
+          - "https://registry.hierocracy.home:5000"
     config:
       "10.0.0.1:5000":
         tls:

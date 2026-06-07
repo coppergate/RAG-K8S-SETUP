@@ -132,6 +132,10 @@ sudo iptables -A FORWARD -i enp5s0 -o br-app -m state --state RELATED,ESTABLISHE
 sudo iptables -D FORWARD -i enp5s0 -o br-app -s 192.168.0.0/16 -j ACCEPT 2>/dev/null || true
 sudo iptables -A FORWARD -i enp5s0 -o br-app -s 192.168.0.0/16 -j ACCEPT
 
+# Allow new connections from the physical LAN to the Talos control-plane fabric
+sudo iptables -D FORWARD -i enp5s0 -o talos-bridge -d 10.0.0.0/24 -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+sudo iptables -A FORWARD -i enp5s0 -o talos-bridge -d 10.0.0.0/24 -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
+
 # Allow forwarding between Talos bridge and LAN uplink
 sudo iptables -D FORWARD -i talos-bridge -o enp5s0 -j ACCEPT 2>/dev/null || true
 sudo iptables -A FORWARD -i talos-bridge -o enp5s0 -j ACCEPT
@@ -156,7 +160,5 @@ echo "Application Bridge (VLAN 20): br-app - Host IP: 172.20.0.1/16"
 echo "  Note: Traffic leaving via eno1 is tagged with VLAN 20."
 echo "  Note: Hierophant will route between enp5s0 and br-app for local hosts."
 echo "Talos Control Bridge: talos-bridge - Host IP: 10.0.0.1/24"
-echo "NAT enabled for 10.0.0.0/24 via enp5s0"
+echo "Host NAT and forwarding enabled for 10.0.0.0/24 via enp5s0"
 echo "172.20.0.0/16 is NATed via br-app and enp5s0 to resolve asymmetric routing issues."
-
-

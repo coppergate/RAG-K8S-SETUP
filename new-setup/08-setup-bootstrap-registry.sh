@@ -2,7 +2,8 @@
 # ==============================================================================
 # 08-SETUP-BOOTSTRAP-REGISTRY.SH
 # Ensure the bootstrap registry is running and seeded with installer images.
-# MUST be executed on 'hierophant'.
+# MUST be executed on 'hierophant' as root (or via sudo).
+# Uses a system-level Quadlet so no specific user account is required.
 # ==============================================================================
 set -e
 
@@ -13,20 +14,14 @@ fi
 
 source "${SETUP_ROOT}/new-setup/config-env.sh"
 
-# 1. Ensure the registry container is running (via Quadlet/systemd)
 echo "[REGISTRY] Ensuring bootstrap registry service is running..."
 
-# Define file paths
-REGISTRY_USER="junie"
-REGISTRY_HOME="/home/${REGISTRY_USER}"
-QUADLET_DIR="${REGISTRY_HOME}/.config/containers/systemd"
+QUADLET_DIR="/etc/containers/systemd"
 REGISTRY_CONFIG_DIR="/mnt/storage/registry-config"
 REGISTRY_DATA_DIR="/mnt/storage/registry-data"
 
 # Ensure directories exist
-mkdir -p "${QUADLET_DIR}"
-sudo -n mkdir -p "${REGISTRY_CONFIG_DIR}" "${REGISTRY_DATA_DIR}"
-sudo -n chown -R ${REGISTRY_USER}:${REGISTRY_USER} "${REGISTRY_CONFIG_DIR}" "${REGISTRY_DATA_DIR}"
+sudo -n mkdir -p "${QUADLET_DIR}" "${REGISTRY_CONFIG_DIR}" "${REGISTRY_DATA_DIR}"
 
 # 1.1 Create Registry Configuration if missing
 if [ ! -f "${REGISTRY_CONFIG_DIR}/config.yml" ]; then
@@ -59,18 +54,24 @@ fi
 # 1.2 Generate TLS certificates if missing
 if [ ! -f "${REGISTRY_CONFIG_DIR}/tls.crt" ]; then
     echo "  - Generating self-signed TLS certificates for the registry..."
-    # Using '10.0.0.1' and 'hierophant.hierocracy.home' in SANs
-    sudo -n openssl req -x509 -newnodes -days 3650 -newkey rsa:4096 \
+    sudo -n openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
         -keyout "${REGISTRY_CONFIG_DIR}/tls.key" \
         -out "${REGISTRY_CONFIG_DIR}/tls.crt" \
         -subj "/C=US/ST=CO/L=Denver/O=coppergate/CN=hierophant.hierocracy.home" \
         -addext "subjectAltName=DNS:hierophant.hierocracy.home,DNS:localhost,IP:10.0.0.1,IP:127.0.0.1"
 fi
-sudo -n chown ${REGISTRY_USER}:${REGISTRY_USER} "${REGISTRY_CONFIG_DIR}/tls.key" "${REGISTRY_CONFIG_DIR}/tls.crt"
 
-# 1.3 Create Quadlet file
-echo "  - Creating Quadlet file: ${QUADLET_DIR}/registry.container"
-cat <<EOF > "${QUADLET_DIR}/registry.container"
+# 1.3 Ensure registry:2 image is available in the root podman store.
+# Pull with full docker.io path and no TLS verify to avoid mirror loops
+# (the bootstrap registry itself isn't up yet at this point).
+if ! sudo -n podman image exists docker.io/library/registry:2; then
+    echo "  - Pulling registry:2 image (bypassing mirrors)..."
+    sudo -n podman pull --tls-verify=false docker.io/library/registry:2
+fi
+
+# 1.4 Create system-level Quadlet file
+echo "  - Creating system Quadlet: ${QUADLET_DIR}/registry.container"
+cat <<EOF | sudo -n tee "${QUADLET_DIR}/registry.container" > /dev/null
 [Container]
 Image=registry:2
 ContainerName=registry
@@ -81,59 +82,55 @@ Volume=${REGISTRY_CONFIG_DIR}/tls.crt:/etc/docker/registry/tls.crt
 Volume=${REGISTRY_CONFIG_DIR}/tls.key:/etc/docker/registry/tls.key
 Environment=REGISTRY_HTTP_ADDR=0.0.0.0:5000
 PodmanArgs=--security-opt=label=disable
+
 [Service]
 Restart=always
+
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
 
-# 1.4 Ensure firewall allows port 5000 from the talos-bridge
-echo "  - Ensuring host firewall allows port 5000 on talos-bridge..."
-sudo -n iptables -I INPUT -i talos-bridge -p tcp --dport 5000 -j ACCEPT 2>/dev/null || true
+# 1.5 Ensure firewall allows port 5000
+echo "  - Ensuring host firewall allows port 5000..."
+sudo -n iptables -C INPUT -p tcp --dport 5000 -j ACCEPT 2>/dev/null || \
+    sudo -n iptables -I INPUT -p tcp --dport 5000 -j ACCEPT
 
-# 1.5 Manage systemd user bus accessibility (handles non-interactive/sudo/root runs)
-REGISTRY_UID=$(id -u ${REGISTRY_USER} 2>/dev/null || id -u)
-
-if [ "$(id -u)" -eq 0 ]; then
-    # Running as root: Manage junie's user service
-    echo "[REGISTRY] Running systemctl --user as ${REGISTRY_USER}..."
-    runuser -l ${REGISTRY_USER} -c "export XDG_RUNTIME_DIR=/run/user/${REGISTRY_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${REGISTRY_UID}/bus; systemctl --user daemon-reload; systemctl --user enable --now registry.service" || true
-else
-    # Running as non-root (hopefully junie)
-    # Ensure environment is set even if in a non-interactive/broken session
-    if [ -z "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
-        export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
-    fi
-    systemctl --user daemon-reload || true
-    systemctl --user enable --now registry.service || true
+# 1.6 Clear any stale container that may be holding port 5000
+if sudo -n podman ps -q --filter name=registry 2>/dev/null | grep -q .; then
+    echo "  - Stopping stale registry container(s)..."
+    sudo -n podman ps -q --filter name=registry | xargs sudo -n podman rm -f
 fi
 
-# Check if it's actually responding
+# 1.7 Reload systemd and start the service
+echo "[REGISTRY] Reloading systemd and starting registry service..."
+sudo -n systemctl daemon-reload
+sudo -n systemctl start registry.service
+
+# 1.7 Verify connectivity
 echo "[REGISTRY] Verifying registry connectivity..."
-if ! curl -sk https://10.0.0.1:5000/v2/ >/dev/null; then
-    echo "WARNING: Registry at 10.0.0.1:5000 is not responding yet. Waiting 5s..."
+if ! curl -sk https://${REGISTRY}/v2/ >/dev/null; then
+    echo "WARNING: Registry at ${REGISTRY} is not responding yet. Waiting 5s..."
     sleep 5
-    if ! curl -sk https://10.0.0.1:5000/v2/ >/dev/null; then
-        echo "ERROR: Registry at 10.0.0.1:5000 is not available."
+    if ! curl -sk https://${REGISTRY}/v2/ >/dev/null; then
+        echo "ERROR: Registry at ${REGISTRY} is not available."
+        echo "Check: sudo systemctl status registry.service"
+        echo "Logs:  sudo journalctl -xeu registry.service"
         exit 1
     fi
 fi
 
+echo "[REGISTRY] Registry is up at https://${REGISTRY}/v2/"
+
 # 2. Seed Required Images
-# These are required for the nodes to install Talos Linux and start the Control Plane.
-# Talos mirrors (like registry.k8s.io) will append the path, e.g.,
-# registry.k8s.io/etcd:v3.6.7 -> 10.0.0.1:5000/registry.k8s.io/etcd:v3.6.7
 echo "[REGISTRY] Seeding required images..."
 
-# Helper function to pull, tag and push
 seed_image() {
     local src=$1
     local dest_name=$2
     echo "  - Seeding ${dest_name}..."
-    podman pull "${src}"
-    podman tag  "${src}" "${REGISTRY}/${dest_name}"
-    podman push --tls-verify=false "${REGISTRY}/${dest_name}"
+    sudo -n podman pull "${src}"
+    sudo -n podman tag  "${src}" "${REGISTRY}/${dest_name}"
+    sudo -n podman push --tls-verify=false "${REGISTRY}/${dest_name}"
 }
 
 # 2.1 Talos Installers
@@ -141,10 +138,6 @@ seed_image "factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0
 seed_image "factory.talos.dev/metal-installer/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9:v1.12.4" "siderolabs/installer-inference:v1.12.4"
 
 # 2.2 Kubernetes Control Plane Images (v1.35.0)
-# We seed both the full path and the short path to handle different client behaviors.
-# Talos mirrors (like registry.k8s.io) will append the path, e.g.,
-# registry.k8s.io/etcd:v3.6.7 -> 10.0.0.1:5000/registry.k8s.io/etcd:v3.6.7
-# However, some components (like kubelet) might try short paths with ?ns=...
 seed_image "registry.k8s.io/etcd:v3.6.7" "registry.k8s.io/etcd:v3.6.7"
 seed_image "registry.k8s.io/etcd:v3.6.7" "etcd:v3.6.7"
 
@@ -173,14 +166,14 @@ seed_image "ghcr.io/siderolabs/flannel:v0.27.4" "siderolabs/flannel:v0.27.4"
 seed_image "registry.k8s.io/coredns/coredns:v1.13.2" "registry.k8s.io/coredns/coredns:v1.13.2"
 seed_image "registry.k8s.io/coredns/coredns:v1.13.2" "coredns/coredns:v1.13.2"
 
-# 2.4 Talos System Images (Required for early boot/install)
+# 2.4 Talos System Images
 seed_image "ghcr.io/siderolabs/installer:v1.12.4" "ghcr.io/siderolabs/installer:v1.12.4"
 seed_image "ghcr.io/siderolabs/installer:v1.12.4" "siderolabs/installer:v1.12.4"
 
 seed_image "ghcr.io/siderolabs/talos:v1.12.4" "ghcr.io/siderolabs/talos:v1.12.4"
 seed_image "ghcr.io/siderolabs/talos:v1.12.4" "siderolabs/talos:v1.12.4"
 
-# 3. Ensure Boot ISOs are present in the shared directory
+# 3. Ensure Boot ISOs are present
 ISO_DIR="${SETUP_ROOT}/talos/iso-images/v1.12.4"
 mkdir -p "${ISO_DIR}"
 

@@ -3,8 +3,10 @@ machine:
     hostname: control-0
     interfaces:
     - interface: eth0
+      dhcp: true
       vip:
         ip: 10.0.0.15
     - interface: eth1
+      dhcp: false
       addresses:
       - 172.20.0.100/16

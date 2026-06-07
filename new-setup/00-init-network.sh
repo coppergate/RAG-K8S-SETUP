@@ -89,6 +89,13 @@ done
 ensure_iptables filter FORWARD -i br-app -o enp5s0 -j ACCEPT
 ensure_iptables filter FORWARD -i enp5s0 -o br-app -m state --state RELATED,ESTABLISHED -j ACCEPT
 ensure_iptables filter FORWARD -i enp5s0 -o br-app -s 192.168.0.0/16 -j ACCEPT
+ensure_iptables filter FORWARD -i enp5s0 -o talos-bridge -d 10.0.0.0/24 -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
+ensure_iptables filter FORWARD -i talos-bridge -o enp5s0 -s 10.0.0.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# Allow DNS and DHCP from VMs on the talos-bridge to the host (libvirt dnsmasq)
+ensure_iptables filter INPUT -i talos-bridge -p udp --dport 53 -j ACCEPT
+ensure_iptables filter INPUT -i talos-bridge -p tcp --dport 53 -j ACCEPT
+ensure_iptables filter INPUT -i talos-bridge -p udp --dport 67 -j ACCEPT
 
 # Disable bridge-nf-call-iptables (prevents host filter from blocking bridged VM traffic)
 if [ -f /proc/sys/net/bridge/bridge-nf-call-iptables ]; then
