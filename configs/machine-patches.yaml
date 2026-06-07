@@ -13,7 +13,7 @@ machine:
             - "8.8.8.8"
             - "1.1.1.1"
         extraHostEntries:
-            - ip: 192.168.1.101
+            - ip: 10.0.0.1
               aliases:
                   - hierophant.hierocracy.home
                   - hierophant
