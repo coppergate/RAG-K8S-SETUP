@@ -65,3 +65,7 @@ machine:
             "registry.container-registry.svc.cluster.local:5000":
                 endpoints:
                     - https://hierophant.hierocracy.home:5000
+        config:
+            "hierophant.hierocracy.home:5000":
+                tls:
+                    insecureSkipVerify: true
