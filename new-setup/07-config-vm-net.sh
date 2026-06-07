@@ -7,12 +7,17 @@ source ${SETUP_ROOT}/new-setup/05-MAC-addresses.sh
 source ${SETUP_ROOT}/new-setup/utils.sh
 
 # talos-nat.xml:
-# This is the 'first interface' for management traffic on the Talos bridge.
-# Host-level routing and NAT are managed separately by 00-init-network.sh.
+# This is the 'first interface' for management and internet access.
+# forward mode=nat causes libvirt/dnsmasq to advertise 10.0.0.1 as the default
+# gateway via DHCP (option 3), which VMs need to reach the internet.
+# DNS forwarders ensure VMs use the local DNS server (192.168.1.210).
 cat > talos-nat.xml <<EOF
 <network>
   <name>talos-nat</name>
   <bridge name="talos-bridge" stp="on" delay="0"/>
+  <forward mode="nat" dev="enp5s0">
+    <nat/>
+  </forward>
   <dns>
     <forwarder addr="192.168.1.210"/>
     <forwarder addr="8.8.8.8"/>
