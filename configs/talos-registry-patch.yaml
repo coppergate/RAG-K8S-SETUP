@@ -10,9 +10,11 @@ machine:
       "10.0.0.1:5000":
         endpoints:
           - "https://registry.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
       "hierophant.hierocracy.home:5000":
         endpoints:
           - "https://registry.hierocracy.home:5000"
+          - "https://10.0.0.1:5000"
       "registry.hierocracy.home:5000":
         endpoints:
           - "https://registry.hierocracy.home:5000"

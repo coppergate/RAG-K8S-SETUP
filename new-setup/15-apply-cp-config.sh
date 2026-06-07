@@ -34,14 +34,15 @@ for f in "controlplane.yaml" "worker.yaml"; do
     sudo mv "/tmp/$f.stripped" "${TALOS_CONFIG}/$f"
     
     # Apply global site configurations (NTP, nameservers, VIP, registry mirrors, extra manifests, etc.)
-    # machine-patches.yaml: Site-wide machine settings (bootstrap registry at hierophant.hierocracy.home:5000)
+    # machine-patches.yaml: Site-wide machine settings
     # cluster-patches.yaml: Site-wide cluster settings (VIP, manifests)
-    # NOTE: talos-registry-patch.yaml is NOT applied here — it switches mirrors to the in-cluster
-    # registry (registry.hierocracy.home:5000) which doesn't exist until after bootstrap.
-    # Apply it manually after the in-cluster registry is deployed.
+    # talos-registry-patch.yaml: Registry mirrors with fallback to bootstrap registry (10.0.0.1:5000)
+    #   Safe to apply from initial build — fallback endpoints allow pulls during bootstrap before
+    #   the in-cluster registry (registry.hierocracy.home:5000) is running.
     sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
         --patch @${SETUP_ROOT}/configs/machine-patches.yaml \
         --patch @${SETUP_ROOT}/configs/cluster-patches.yaml \
+        --patch @${SETUP_ROOT}/configs/talos-registry-patch.yaml \
         -o "${TALOS_CONFIG}/$f.patched"
     sudo mv "${TALOS_CONFIG}/$f.patched" "${TALOS_CONFIG}/$f"
 done
