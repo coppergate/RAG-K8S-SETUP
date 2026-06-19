@@ -8,7 +8,7 @@ echo "Starting cluster VM restoration on hierophant..."
 # 1. Define groups for careful restart
 CONTROL_VMS=("control-0" "control-1" "control-2")
 WORKER_VMS=("worker-0" "worker-1" "worker-2" "worker-3")
-OTHER_VMS=("inference-0" "inference-1")
+OTHER_VMS=("inference-0")
 
 # Function to stop a VM carefully
 stop_vm() {

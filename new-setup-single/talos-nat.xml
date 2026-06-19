@@ -19,8 +19,7 @@
       <host mac="6A:69:11:AA:00:A5" name="worker-1" ip="10.0.0.111"/>      
       <host mac="6A:69:11:AA:00:A6" name="worker-2" ip="10.0.0.112"/>      
       <host mac="6A:69:11:AA:00:A7" name="worker-3" ip="10.0.0.113"/>      
-      <host mac="6A:69:11:AA:00:A8" name="inference-0" ip="10.0.0.120"/>      
-      <host mac="6A:69:11:AA:00:A9" name="inference-1" ip="10.0.0.121"/>      
+      <host mac="6A:69:11:AA:00:A8" name="inference-0" ip="10.0.0.120"/>
     </dhcp>
   </ip>
 </network>

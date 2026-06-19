@@ -38,7 +38,7 @@ DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-par
 DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part1"]="5b96f19d-4b63-49f9-88bd-2319435281cc" # control-1 (60GB)
 DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"]="bd96c5b2-4854-449b-bd0f-dc7e46c97ef9" # inference-0 (remainder)
 DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"]="734bfeb7-bf07-414f-9ecd-8151f8963d66" # control-2 (60GB)
-DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"]="af731adb-3f5c-4f5f-8490-1422449de699" # inference-1 (remainder)
+DISK_MAPPING["/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"]="af731adb-3f5c-4f5f-8490-1422449de699" # inference-0 extra storage disk
 
 echo "=========================================="
 echo "NVMe Partition Formatting Script"

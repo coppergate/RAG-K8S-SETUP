@@ -98,7 +98,7 @@ STORAGE_3_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL34JEA"
 
 # Disk for single inference node (boot disk from former inference-0 partition)
 INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
-# Additional storage disk attached to the single inference node (former inference-1 partition)
+# Additional storage disk attached to the single inference node
 INFERENCE_EXTRA_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
 
 echo "BUILDING WORKER NODES"
@@ -161,7 +161,7 @@ sudo -E virt-install \
   --network network=lb-net,mac="${inference_0_extern_mac}" \
   --boot cdrom,hd --noautoconsole
 
-echo "Attaching extra storage disk to inference-0 (former inference-1 partition)..."
+echo "Attaching extra storage disk to inference-0..."
 sudo -n virsh attach-disk "inference-0" "${INFERENCE_EXTRA_DISK}" vdb \
   --driver qemu --subdriver raw --sourcetype block \
   --targetbus virtio --cache none --io native --persistent --config
