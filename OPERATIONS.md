@@ -186,7 +186,44 @@ As of version `2.2.11`, Alloy (DaemonSet) uses **local pod discovery** for clust
     -   Certificates and keys are mounted from secrets named `<service>-tls`.
     -   Probes use `scheme: HTTPS`.
 
-### 1.7 Timezone (k8tz) Configuration
+### 1.7 SELinux — libvirt Hook Script Blocked (`virtnetworkd_t`)
+
+After a `selinux-policy` package update (Fedora 43+), `virtnetworkd_t` became more restrictive and can no longer execute hook scripts or common binaries (`logger`, `sleep`, `grep`, etc.). This manifests as:
+
+```
+error: Hook script execution failed: ... unexpected exit status 126: Permission denied
+```
+
+**Root cause**: The `virt_hooks_unconfined` boolean defaults to off after a policy update, and `virtnetworkd_t` only allows execution of `dnsmasq`, `ifconfig`, `iptables`, and `shell_exec_t` files.
+
+**Fix** — generate a custom SELinux policy module from the actual denials:
+
+```bash
+# 1. Make virtnetworkd_t permissive to capture all denials without blocking
+sudo semanage permissive -a virtnetworkd_t
+
+# 2. Trigger all denials in one pass
+sudo virsh net-start talos-nat
+
+# 3. Generate and install a targeted policy module
+sudo ausearch -m avc -ts recent | grep virtnetworkd_t | \
+  audit2allow -M virtnet-hooks
+sudo semodule -i virtnet-hooks.pp
+
+# 4. Restore enforcement and verify
+sudo semanage permissive -d virtnetworkd_t
+sudo virsh net-start talos-nat
+```
+
+Also ensure the hook script shebang is `#!/bin/bash` (not `#!/usr/bin/env bash`) and the file is typed `shell_exec_t`:
+
+```bash
+sudo chcon -t shell_exec_t /etc/libvirt/hooks/network
+sudo semanage fcontext -a -t shell_exec_t /etc/libvirt/hooks/network
+sudo restorecon -v /etc/libvirt/hooks/network
+```
+
+### 1.8 Timezone (k8tz) Configuration
 The cluster uses `k8tz` to inject the `Europe/London` (BST) timezone into all pods.
 -   **Injection**: Pods receive a `k8tz` init container and a `TZ` environment variable.
 -   **Inclusion**: All namespaces except `k8tz` itself are included (including `kube-system`).
