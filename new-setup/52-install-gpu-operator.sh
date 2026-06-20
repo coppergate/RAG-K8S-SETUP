@@ -167,6 +167,14 @@ else
   echo "[GPU-OP] Using existing Helm at ${HELM_BIN}"
 fi
 
+echo "[GPU-OP] Pre-labeling inference nodes (hostname matches 'inference*') with node-role=inference..."
+for node in $(${KUBECTL} get nodes -o jsonpath='{.items[*].metadata.name}'); do
+  if [[ "${node}" == inference* ]]; then
+    ${KUBECTL} label node "${node}" node-role=inference --overwrite
+    echo "[GPU-OP]   Labeled ${node} -> node-role=inference"
+  fi
+done
+
 echo "[GPU-OP] Adding/updating NVIDIA Helm repo..."
 "${HELM_BIN}" repo add nvidia https://nvidia.github.io/gpu-operator >/dev/null 2>&1 || true
 "${HELM_BIN}" repo update >/dev/null 2>&1 || true
@@ -198,6 +206,10 @@ devicePlugin:
       value: "false"
     - name: DEVICE_LIST_STRATEGY
       value: "envvar"
+node-feature-discovery:
+  worker:
+    nodeSelector:
+      node-role: inference
 EOF
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" nvidia/gpu-operator \

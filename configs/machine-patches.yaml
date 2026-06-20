@@ -28,6 +28,13 @@ machine:
         disk: /dev/vda
         image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
         wipe: true
+    sysctls:
+        # Prevent inotify exhaustion under Ceph + Flannel pod density
+        fs.inotify.max_user_watches: "524288"
+        fs.inotify.max_user_instances: "512"
+        # Reduce dirty page accumulation to avoid IO stalls on Ceph block devices
+        vm.dirty_ratio: "10"
+        vm.dirty_background_ratio: "5"
     kubelet:
         extraArgs:
             rotate-server-certificates: "true"
