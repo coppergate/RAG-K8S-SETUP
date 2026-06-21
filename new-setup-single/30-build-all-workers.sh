@@ -6,7 +6,7 @@ if [ -z "${SETUP_ROOT}" ]; then
     export SETUP_ROOT="/mnt/hegemon-share/share/code/kubernetes-setup"
 fi
 
-source "${SETUP_ROOT}/new-setup-single/config-env.sh" 
+source "${SETUP_ROOT}/new-setup-single/config-env.sh"
 source "${SETUP_ROOT}/new-setup-single/05-MAC-addresses.sh"
 source "${SETUP_ROOT}/new-setup-single/utils.sh"
 
@@ -68,38 +68,30 @@ else
   echo "[INF ISO] Using existing ISO at ${INFERENCE_NODE_IMAGE}"
 fi
 
-# Ensure storage pool exists
-sudo -n virsh pool-info CONTROLLER >/dev/null 2>&1 || {
-    echo "Creating CONTROLLER storage pool..."
-    sudo -n mkdir -p /var/lib/libvirt/storage-pools/CONTROLLER
-    sudo -n virsh pool-define-as --name CONTROLLER --target /var/lib/libvirt/storage-pools/CONTROLLER --type dir
-    sudo -n virsh pool-build CONTROLLER
-    sudo -n virsh pool-start CONTROLLER
-    sudo -n virsh pool-autostart CONTROLLER
-}
+# Worker OS disks: workers 0+1 on nvme-362830, workers 2+3 on nvme-362984.
+# Each drive also carries bluestore DB partitions (vdc) for the two workers it hosts.
+WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part1"
+WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part3"
+WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"
+WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part3"
 
-# Disks for workers
-WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
-WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
-WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part1"
-WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
+# Ceph bluestore DB partitions (NVMe, raw) — one per worker, co-located on the same
+# drive as the OS partition for that worker pair to minimize disk hop latency.
+WORKER_0_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
+WORKER_1_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part4"
+WORKER_2_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
+WORKER_3_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part4"
 
-# Ceph Metadata disks for workers (on NVMe)
-WORKER_0_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part3"
-WORKER_1_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part4"
-WORKER_2_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part3"
-WORKER_3_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part4"
-
-# attachable disks for storage
-STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR" 
-STORAGE_1_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX" 
-STORAGE_2_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BA2" 
+# Ceph data (HDD) disks — one 1.8TB spinning disk per worker (vdb), used for OSD data.
+STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR"
+STORAGE_1_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX"
+STORAGE_2_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BA2"
 STORAGE_3_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL34JEA"
 
-# Disk for single inference node (boot disk from former inference-0 partition)
-INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
-# Additional storage disk attached to the single inference node
-INFERENCE_EXTRA_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
+# Inference node: dedicated NVMe (nvme-362935).
+# p1 = OS (80GB), p2 = model storage (150GB, attached as vdb).
+INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part1"
+INFERENCE_MODEL_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
 
 echo "BUILDING WORKER NODES"
 for i in {0..3}; do
@@ -107,7 +99,7 @@ for i in {0..3}; do
   extern_mac_var="data_${i}_extern_mac"
   disk_var="WORKER_${i}_DISK"
   name="worker-${i}"
-  
+
   echo "--- BUILDING VM: $name ---"
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
@@ -119,8 +111,8 @@ for i in {0..3}; do
   sudo -E virt-install \
     --virt-type kvm \
     --name "$name" \
-    --ram 36864 \
-    --vcpus 7 \
+    --ram 28672 \
+    --vcpus 8 \
     --disk path="${!disk_var}",bus=virtio \
     --cdrom "${WORKER_NODE_IMAGE}" \
     --os-variant=linux2024 \
@@ -129,15 +121,19 @@ for i in {0..3}; do
     --boot cdrom,hd --noautoconsole
 done
 
-echo "Attach extra disks to workers (Storage and Ceph Metadata)"
+echo "Attach extra disks to workers (HDD data disk + NVMe bluestore DB)"
 for i in {0..3}; do
   name="worker-${i}"
   storage_disk_var="STORAGE_${i}_DISK"
-  meta_disk_var="WORKER_${i}_META"
-  
+  bluestore_db_var="WORKER_${i}_BLUESTORE_DB"
+
   echo "Attaching disks to $name..."
-  sudo -n virsh attach-disk "$name" "${!storage_disk_var}" vdb --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
-  sudo -n virsh attach-disk "$name" "${!meta_disk_var}" vdc --driver qemu --subdriver raw --sourcetype block --targetbus virtio --cache none --io native --persistent --config
+  sudo -n virsh attach-disk "$name" "${!storage_disk_var}" vdb \
+    --driver qemu --subdriver raw --sourcetype block \
+    --targetbus virtio --cache none --io native --persistent --config
+  sudo -n virsh attach-disk "$name" "${!bluestore_db_var}" vdc \
+    --driver qemu --subdriver raw --sourcetype block \
+    --targetbus virtio --cache none --io native --persistent --config
 done
 
 echo "BUILDING INFERENCE NODE (single combined node)"
@@ -161,15 +157,15 @@ sudo -E virt-install \
   --network network=lb-net,mac="${inference_0_extern_mac}" \
   --boot cdrom,hd --noautoconsole
 
-echo "Attaching extra storage disk to inference-0..."
-sudo -n virsh attach-disk "inference-0" "${INFERENCE_EXTRA_DISK}" vdb \
+echo "Attaching model storage disk to inference-0..."
+sudo -n virsh attach-disk "inference-0" "${INFERENCE_MODEL_DISK}" vdb \
   --driver qemu --subdriver raw --sourcetype block \
   --targetbus virtio --cache none --io native --persistent --config
 
 echo "waiting for nodes to obtain IPs"
 sleep 60
 for i in {0..3}; do
-  sudo virsh domifaddr "worker-${i}";
+  sudo virsh domifaddr "worker-${i}"
 done
 
 sudo virsh domifaddr inference-0
