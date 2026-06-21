@@ -14,12 +14,15 @@ CONTROL_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
 
 echo "[CP ISO] Using ISO at ${CONTROL_NODE_IMAGE}"
 
-# All three control plane nodes use dedicated partitions on nvme-362996.
-# This drive is reserved exclusively for the control plane — no Ceph IO contention.
-# Resources: 6 vCPU, 16GB RAM each (upgraded from 4 vCPU / 8GB for etcd stability).
+# Each control plane node is on a different physical NVMe drive for HA:
+#   control-0 → nvme-362996-part1  (shares drive with NVMe OSD, different partition)
+#   control-1 → nvme-362830-part1  (shares drive with workers 0+1)
+#   control-2 → nvme-362984-part1  (shares drive with workers 2+3)
+# Single-drive failure only loses 1 of 3 etcd members — quorum maintained.
+# Resources: 6 vCPU, 16GB RAM each (upgraded for etcd stability).
 CONTROL_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
-CONTROL_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
-CONTROL_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part3"
+CONTROL_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part1"
+CONTROL_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"
 
 echo "--- BUILDING VM: control-0 ---"
 sudo -n virsh destroy control-0 >/dev/null 2>&1 || true

@@ -68,25 +68,28 @@ else
   echo "[INF ISO] Using existing ISO at ${INFERENCE_NODE_IMAGE}"
 fi
 
-# Worker OS disks: workers 0+1 on nvme-362830, workers 2+3 on nvme-362984.
-# Each drive also carries bluestore DB partitions (vdc) for the two workers it hosts.
-WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part1"
-WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part3"
-WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"
-WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part3"
+# Worker OS disks: partition layout is ctrl(p1) + w-OS(p2) + w-DB(p3) + w-OS(p4) + w-DB(p5)
+# on each of nvme-362830 (workers 0+1) and nvme-362984 (workers 2+3).
+WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
+WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part4"
+WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
+WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part4"
 
-# Ceph bluestore DB partitions (NVMe, raw) — one per worker, co-located on the same
-# drive as the OS partition for that worker pair to minimize disk hop latency.
-WORKER_0_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part2"
-WORKER_1_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part4"
-WORKER_2_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
-WORKER_3_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part4"
+# Ceph bluestore DB partitions (NVMe, raw) — NVMe metadata acceleration for HDD OSDs.
+WORKER_0_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part3"
+WORKER_1_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part5"
+WORKER_2_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part3"
+WORKER_3_BLUESTORE_DB="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part5"
 
 # Ceph data (HDD) disks — one 1.8TB spinning disk per worker (vdb), used for OSD data.
 STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR"
 STORAGE_1_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX"
 STORAGE_2_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BA2"
 STORAGE_3_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL34JEA"
+
+# NVMe-only fast-tier OSD: 195GB partition on nvme-362996-part2, attached to worker-0 as vdd.
+# This is on a separate physical NVMe from worker-0's OS (362830), so no IO contention.
+NVME_OSD_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
 
 # Inference node: dedicated NVMe (nvme-362935).
 # p1 = OS (80GB), p2 = model storage (150GB, attached as vdb).
@@ -135,6 +138,11 @@ for i in {0..3}; do
     --driver qemu --subdriver raw --sourcetype block \
     --targetbus virtio --cache none --io native --persistent --config
 done
+
+echo "Attaching NVMe fast-tier OSD to worker-0 (vdd)..."
+sudo -n virsh attach-disk "worker-0" "${NVME_OSD_DISK}" vdd \
+  --driver qemu --subdriver raw --sourcetype block \
+  --targetbus virtio --cache none --io native --persistent --config
 
 echo "BUILDING INFERENCE NODE (single combined node)"
 echo "--- BUILDING VM: inference-0 ---"
