@@ -196,7 +196,7 @@ $KUBECTL scale deployment.apps/rook-ceph-operator -n "$ROOK_NS" --replicas=0 2>/
 
 # 4. Stop all VMs
 echo "Step 4: Stopping all cluster VMs..."
-VMS=("worker-0" "worker-1" "worker-2" "worker-3" "inference-0" "inference-1" "control-0" "control-1" "control-2")
+VMS=("worker-0" "worker-1" "worker-2" "inference-0" "inference-1" "control-0" "control-1" "control-2")
 for vm in "${VMS[@]}"; do
     if sudo virsh dominfo "$vm" &>/dev/null; then
         echo "  Stopping VM: $vm"

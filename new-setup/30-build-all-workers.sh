@@ -82,13 +82,11 @@ sudo -n virsh pool-info CONTROLLER >/dev/null 2>&1 || {
 WORKER_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
 WORKER_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part2"
 WORKER_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part1"
-WORKER_3_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
 
 # Ceph Metadata disks for workers (on NVMe)
 WORKER_0_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part3"
 WORKER_1_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part4"
 WORKER_2_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part3"
-WORKER_3_META="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part4"
 
 # attachable disks for storage
 STORAGE_0_DISK="/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR" 
@@ -101,7 +99,7 @@ INFERENCE_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830
 INFERENCE_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
 
 echo "BUILDING WORKER NODES"
-for i in {0..3}; do
+for i in {0..2}; do
   mac_var="data_${i}_mac"
   extern_mac_var="data_${i}_extern_mac"
   disk_var="WORKER_${i}_DISK"
@@ -129,7 +127,7 @@ for i in {0..3}; do
 done
 
 echo "Attach extra disks to workers (Storage and Ceph Metadata)"
-for i in {0..3}; do
+for i in {0..2}; do
   name="worker-${i}"
   storage_disk_var="STORAGE_${i}_DISK"
   meta_disk_var="WORKER_${i}_META"
@@ -171,7 +169,7 @@ done
 
 echo "waiting for nodes to obtain IPs"
 sleep 60
-for i in {0..3}; do 
+for i in {0..2}; do 
   sudo virsh domifaddr "worker-${i}"; 
 done
 

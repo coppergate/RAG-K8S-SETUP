@@ -20,7 +20,7 @@ echo "Step 1: Starting all cluster VMs..."
 echo "Ensuring GPUs are detached from host..."
 sudo virsh nodedev-detach pci_0000_04_00_0 2>/dev/null || true
 sudo virsh nodedev-detach pci_0000_84_00_0 2>/dev/null || true
-VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2" "worker-3" "inference-0" "inference-1")
+VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2" "inference-0" "inference-1")
 for vm in "${VMS[@]}"; do
     if sudo virsh dominfo "$vm" &>/dev/null; then
         if sudo virsh list --name | grep -q "^$vm$"; then
