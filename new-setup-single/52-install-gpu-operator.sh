@@ -180,8 +180,11 @@ done
 
 echo "[GPU-OP] Installing/Upgrading GPU Operator (Talos-aware: driver.enabled=false, toolkit.enabled=false)..."
 set -x
-# We use a temporary values file to ensure complex array structures are passed correctly to Helm
-cat <<EOF > /tmp/gpu-op-values.yaml
+# Use mktemp so the file is owned by the current user — /tmp/gpu-op-values.yaml can be
+# owned by a different user from a prior run and cause "Permission denied" on write.
+GPU_OP_VALUES=$(mktemp /tmp/gpu-op-values.XXXXXX.yaml)
+trap 'rm -f "$GPU_OP_VALUES"' EXIT
+cat <<EOF > "$GPU_OP_VALUES"
 driver:
   enabled: false
 toolkit:
@@ -202,7 +205,7 @@ EOF
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" nvidia/gpu-operator \
   -n "${NAMESPACE}" --create-namespace ${CHART_VERSION_FLAG} \
-  -f /tmp/gpu-op-values.yaml \
+  -f "$GPU_OP_VALUES" \
   --wait --timeout ${TIMEOUT_SECS}s
 set +x
 
