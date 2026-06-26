@@ -22,7 +22,7 @@ fi
 
 # Destroy and undefine VMs
 echo "Destroying VMs..."
-for vm in control-0 control-1 control-2 worker-0 worker-1 worker-2 worker-3 inference-0; do
+for vm in control-0 control-1 control-2 worker-0 worker-1 worker-2 inference-0; do
     if sudo virsh dominfo "$vm" &>/dev/null; then
         echo "  Destroying VM: $vm"
         sudo virsh destroy "$vm" 2>/dev/null || true

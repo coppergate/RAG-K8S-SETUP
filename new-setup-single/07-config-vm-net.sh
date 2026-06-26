@@ -31,8 +31,7 @@ cat > talos-nat.xml <<EOF
       <host mac="${control_2_mac}" name="control-2" ip="10.0.0.202"/>      
       <host mac="${data_0_mac}" name="worker-0" ip="10.0.0.110"/>      
       <host mac="${data_1_mac}" name="worker-1" ip="10.0.0.111"/>      
-      <host mac="${data_2_mac}" name="worker-2" ip="10.0.0.112"/>      
-      <host mac="${data_3_mac}" name="worker-3" ip="10.0.0.113"/>      
+      <host mac="${data_2_mac}" name="worker-2" ip="10.0.0.112"/>
       <host mac="${inference_0_mac}" name="inference-0" ip="10.0.0.120"/>
     </dhcp>
   </ip>

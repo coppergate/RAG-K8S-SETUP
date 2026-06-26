@@ -8,7 +8,7 @@
 
 set -e
 
-# Ceph HDD data disks (attached as vdb to workers 0-3)
+# Ceph HDD data disks (workers 0-2 get one each; worker-0 gets 2 — former worker-3's disk)
 DISKA=(
     "/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32CQR"
     "/dev/disk/by-id/ata-ST2000DM008-2FR102_ZFL32BZX"
@@ -28,7 +28,7 @@ VM_NVME=(
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part3"
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part4"
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part5"
-    # nvme-362984: control-2 + workers 2+3
+    # nvme-362984: control-2 + worker-2 (p4/p5 = former worker-3, now BlueStore DB on worker-0)
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part2"
     "/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part3"

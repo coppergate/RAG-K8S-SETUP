@@ -19,7 +19,11 @@ echo "[CP ISO] Using ISO at ${CONTROL_NODE_IMAGE}"
 #   control-1 → nvme-362830-part1  (shares drive with workers 0+1)
 #   control-2 → nvme-362984-part1  (shares drive with workers 2+3)
 # Single-drive failure only loses 1 of 3 etcd members — quorum maintained.
-# Resources: 6 vCPU, 16GB RAM each (upgraded for etcd stability).
+# Resources: 4 vCPU, 16GB RAM each.
+# NUMA node 0 pinning — same node as SAS HBA and GPU.
+# Layout: inference-0 uses CPUs 0-13 (14 vCPU)
+#         control-plane uses CPUs 28-39 (3×4=12 vCPU)
+#         CPUs 40-41 reserved for host (2 per NUMA node).
 CONTROL_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
 CONTROL_1_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362830-part1"
 CONTROL_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-part1"
@@ -33,7 +37,8 @@ sudo -n virt-install \
   --virt-type kvm \
   --name control-0 \
   --ram 16384 \
-  --vcpus 6 \
+  --vcpus 4 \
+  --cpuset "28-31" \
   --disk path="${CONTROL_0_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \
@@ -50,7 +55,8 @@ sudo -n virt-install \
   --virt-type kvm \
   --name control-1 \
   --ram 16384 \
-  --vcpus 6 \
+  --vcpus 4 \
+  --cpuset "32-35" \
   --disk path="${CONTROL_1_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \
@@ -67,7 +73,8 @@ sudo -n virt-install \
   --virt-type kvm \
   --name control-2 \
   --ram 16384 \
-  --vcpus 6 \
+  --vcpus 4 \
+  --cpuset "36-39" \
   --disk path="${CONTROL_2_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \

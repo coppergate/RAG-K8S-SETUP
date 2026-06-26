@@ -20,9 +20,6 @@ WORKER_IP_1=$(getNodeIP "worker-1")
 export WORKER_IP_1
 WORKER_IP_2=$(getNodeIP "worker-2")
 export WORKER_IP_2
-WORKER_IP_3=$(getNodeIP "worker-3")
-export WORKER_IP_3
-
 INFERENCE_IP_0=$(getNodeIP "inference-0")
 export INFERENCE_IP_0
 
@@ -35,6 +32,5 @@ echo "CP_IP_2 : ${CP_IP_2}"
 echo "WORKER_IP_0 : ${WORKER_IP_0}"
 echo "WORKER_IP_1 : ${WORKER_IP_1}"
 echo "WORKER_IP_2 : ${WORKER_IP_2}"
-echo "WORKER_IP_3 : ${WORKER_IP_3}"
 echo "INFERENCE_IP_0 : ${INFERENCE_IP_0}"
 echo "----|||||-------|||||----"

@@ -68,9 +68,10 @@ detect_gpu_count() {
 label_node() {
   local node=$1
   local count=$2
-  echo "[GPU LABEL] Labeling $node with gpu=true gpu-count=${count}"
+  echo "[GPU LABEL] Labeling $node with gpu=true gpu-count=${count} nvidia.com/gpu.present=true"
   ${KUBECTL} label node "$node" gpu=true --overwrite
   ${KUBECTL} label node "$node" gpu-count="${count}" --overwrite
+  ${KUBECTL} label node "$node" nvidia.com/gpu.present=true --overwrite
 }
 
 # Discover inference nodes by name (set by hostname-* configs)

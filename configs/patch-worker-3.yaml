@@ -1,7 +1,4 @@
 machine:
-  udev:
-    rules:
-      - SUBSYSTEM=="block", ACTION=="add", KERNEL=="vdb", RUN+="/sbin/pvscan --cache %N"
   network:
     hostname: worker-3
     interfaces:

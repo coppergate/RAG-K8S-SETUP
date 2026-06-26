@@ -7,7 +7,7 @@ echo "Starting sequenced drain and restoration of cluster VMs on hierophant..."
 
 # 1. Define groups
 CONTROL_VMS=("control-0" "control-1" "control-2")
-WORKER_VMS=("worker-0" "worker-1" "worker-2" "worker-3")
+WORKER_VMS=("worker-0" "worker-1" "worker-2")
 OTHER_VMS=("inference-0")
 
 # Check if kubectl is available
