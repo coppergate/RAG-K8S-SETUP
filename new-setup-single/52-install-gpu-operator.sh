@@ -191,9 +191,24 @@ toolkit:
   enabled: false
 operator:
   defaultRuntime: nvidia
+  # Run the operator controller on a worker node, not control plane.
+  nodeSelector:
+    role: storage-node
+node-feature-discovery:
+  # NFD workers run on EVERY node by default, including all control plane nodes.
+  # Restrict to inference nodes only — GPUs will only ever be on inference nodes.
+  # 'role=inference-node' is set by setup-node-labels.sh before this script runs.
+  worker:
+    nodeSelector:
+      role: inference-node
+  master:
+    nodeSelector:
+      role: storage-node
 devicePlugin:
   enabled: true
   runtimeClassName: nvidia
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
   config:
     name: nvidia-device-plugin-config
   env:
@@ -201,6 +216,14 @@ devicePlugin:
       value: "false"
     - name: DEVICE_LIST_STRATEGY
       value: "envvar"
+gfd:
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+dcgmExporter:
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
 EOF
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" nvidia/gpu-operator \
