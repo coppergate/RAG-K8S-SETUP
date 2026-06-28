@@ -106,7 +106,7 @@ spec:
         name: nvidia-talos-validation-fix
     spec:
       nodeSelector:
-        nvidia.com/gpu.present: "true"
+        gpu: "true"
       hostPID: true
       tolerations:
       - operator: Exists
