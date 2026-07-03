@@ -66,21 +66,23 @@ NVME_OSD_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-pa
 # Worker-3 NVMe fast-tier OSD: 195GB partition on nvme-362935-part2, co-located with worker-3's OS.
 WORKER_3_NVME_OSD="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
 
-# NUMA node 1 CPU pinning for workers 0-2 (NVMe drives are on NUMA 1).
-# Each worker gets 8 vCPUs: 4 physical cores + 4 HT siblings on NUMA 1.
-# CPUs 26-27 reserved for host kernel and NVMe IRQ processing (2 per NUMA node).
-# Worker-3 uses NUMA node 0 (former inference node): CPUs 0-13.
+# CPU pinning: workers 0-2 on NUMA 1 (NVMe drives), worker-3 on NUMA 0 (former inference node).
+# CPUs 26-27 reserved for host on NUMA 1; CPUs 40-41 reserved for host on NUMA 0.
 WORKER_CPUSETS=("14-17,42-45" "18-21,46-49" "22-25,50-53" "0-13")
+WORKER_RAMS=(28672 28672 28672 65536)
+WORKER_VCPUS=(8 8 8 14)
 
 echo "BUILDING WORKER NODES (4 workers)"
-for i in {0..2}; do
+for i in {0..3}; do
   mac_var="data_${i}_mac"
   extern_mac_var="data_${i}_extern_mac"
   disk_var="WORKER_${i}_DISK"
   name="worker-${i}"
   cpuset="${WORKER_CPUSETS[$i]}"
+  ram="${WORKER_RAMS[$i]}"
+  vcpus="${WORKER_VCPUS[$i]}"
 
-  echo "--- BUILDING VM: $name (cpuset: $cpuset) ---"
+  echo "--- BUILDING VM: $name (cpuset: $cpuset, ram: ${ram}MB, vcpus: $vcpus) ---"
   sudo -n virsh destroy "$name" >/dev/null 2>&1 || true
   sudo -n virsh undefine "$name" --remove-all-storage >/dev/null 2>&1 || true
 
@@ -91,8 +93,8 @@ for i in {0..2}; do
   sudo -E virt-install \
     --virt-type kvm \
     --name "$name" \
-    --ram 28672 \
-    --vcpus 8 \
+    --ram "$ram" \
+    --vcpus "$vcpus" \
     --cpuset "$cpuset" \
     --disk path="${!disk_var}",bus=virtio \
     --cdrom "${WORKER_NODE_IMAGE}" \
@@ -155,28 +157,6 @@ sudo -n virt-xml "worker-0" --edit target=vdd --disk driver.iothread=2
 
 echo "Assigning NVMe fast-tier iothread on worker-3 (vdd → iothread 2)..."
 sudo -n virt-xml "worker-3" --edit target=vdd --disk driver.iothread=2
-
-echo "BUILDING WORKER-3 (former inference node resources: NUMA 0, 14 vCPUs, 64GB RAM)"
-echo "--- BUILDING VM: worker-3 ---"
-sudo -n virsh destroy "worker-3" >/dev/null 2>&1 || true
-sudo -n virsh undefine "worker-3" --remove-all-storage >/dev/null 2>&1 || true
-
-echo "Wiping NVMe partition for worker-3..."
-sudo -n dd if=/dev/zero of="${WORKER_3_DISK}" bs=1M count=10 conv=fsync || true
-
-# NUMA node 0 pinning for worker-3 (CPUs 0-13). CPUs 40-41 reserved for host on NUMA 0.
-sudo -E virt-install \
-  --virt-type kvm \
-  --name "worker-3" \
-  --ram 65536 \
-  --vcpus 14 \
-  --cpuset "0-13" \
-  --disk path="${WORKER_3_DISK}",bus=virtio \
-  --cdrom "${WORKER_NODE_IMAGE}" \
-  --os-variant=linux2024 \
-  --network network=talos-nat,mac="${data_3_mac}" \
-  --network network=lb-net,mac="${data_3_extern_mac}" \
-  --boot cdrom,hd --noautoconsole
 
 echo "waiting for nodes to obtain IPs"
 sleep 60
