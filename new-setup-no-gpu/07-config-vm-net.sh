@@ -3,7 +3,7 @@ if [ -z "${SETUP_ROOT}" ]; then
     export SETUP_ROOT="/mnt/hegemon-share/share/code/kubernetes-setup"
 fi
 
-source ${SETUP_ROOT}/new-setup-single/05-MAC-addresses.sh
+source ${SETUP_ROOT}/new-setup-no-gpu/05-MAC-addresses.sh
 source ${SETUP_ROOT}/new-setup-single/utils.sh
 
 # talos-nat.xml:
@@ -32,7 +32,7 @@ cat > talos-nat.xml <<EOF
       <host mac="${data_0_mac}" name="worker-0" ip="10.0.0.110"/>      
       <host mac="${data_1_mac}" name="worker-1" ip="10.0.0.111"/>      
       <host mac="${data_2_mac}" name="worker-2" ip="10.0.0.112"/>
-      <host mac="${inference_0_mac}" name="inference-0" ip="10.0.0.120"/>
+      <host mac="${data_3_mac}" name="worker-3" ip="10.0.0.113"/>
     </dhcp>
   </ip>
 </network>
