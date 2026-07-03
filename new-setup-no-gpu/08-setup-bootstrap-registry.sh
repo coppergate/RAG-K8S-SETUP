@@ -135,7 +135,6 @@ seed_image() {
 
 # 2.1 Talos Installers
 seed_image "factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846:v1.12.4" "siderolabs/installer-control-worker:v1.12.4"
-seed_image "factory.talos.dev/metal-installer/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9:v1.12.4" "siderolabs/installer-inference:v1.12.4"
 
 # 2.2 Kubernetes Control Plane Images (v1.35.0)
 seed_image "registry.k8s.io/etcd:v3.6.7" "registry.k8s.io/etcd:v3.6.7"
@@ -178,16 +177,10 @@ ISO_DIR="${SETUP_ROOT}/talos/iso-images/v1.12.4"
 mkdir -p "${ISO_DIR}"
 
 CP_ISO_URL="https://factory.talos.dev/image/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846/v1.12.4/metal-amd64.iso"
-INF_ISO_URL="https://factory.talos.dev/image/f0248d1e8abaffdec12ddc54bae270982f3ab5a70e3c7b0b11c11ca0fb1708d9/v1.12.4/metal-amd64.iso"
 
 if [ ! -f "${ISO_DIR}/talos-metal-f1d3-v1.12.4.iso" ]; then
     echo "[REGISTRY] Downloading Control Plane / Worker ISO..."
     curl -L "${CP_ISO_URL}" -o "${ISO_DIR}/talos-metal-f1d3-v1.12.4.iso"
-fi
-
-if [ ! -f "${ISO_DIR}/talos-metal-f024-v1.12.4.iso" ]; then
-    echo "[REGISTRY] Downloading Inference (NVIDIA) ISO..."
-    curl -L "${INF_ISO_URL}" -o "${ISO_DIR}/talos-metal-f024-v1.12.4.iso"
 fi
 
 echo "[REGISTRY] Bootstrap registry setup complete and seeded."

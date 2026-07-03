@@ -7,7 +7,7 @@ if [ -z "${SETUP_ROOT}" ]; then
 fi
 
 source "${SETUP_ROOT}/new-setup-single/config-env.sh"
-source "${SETUP_ROOT}/new-setup-single/05-MAC-addresses.sh"
+source "${SETUP_ROOT}/new-setup-no-gpu/05-MAC-addresses.sh"
 source "${SETUP_ROOT}/new-setup-single/utils.sh"
 
 CONTROL_NODE_IMAGE="/var/lib/libvirt/images/talos-metal-f1d3-v1.12.4.iso"
@@ -21,7 +21,7 @@ echo "[CP ISO] Using ISO at ${CONTROL_NODE_IMAGE}"
 # Single-drive failure only loses 1 of 3 etcd members — quorum maintained.
 # Resources: 4 vCPU, 16GB RAM each.
 # NUMA node 0 pinning — same node as SAS HBA and GPU.
-# Layout: inference-0 uses CPUs 0-13 (14 vCPU)
+# Layout: worker-3 uses CPUs 0-13 (14 vCPU, NUMA 0)
 #         control-plane uses CPUs 28-39 (3×4=12 vCPU)
 #         CPUs 40-41 reserved for host (2 per NUMA node).
 CONTROL_0_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-part1"
