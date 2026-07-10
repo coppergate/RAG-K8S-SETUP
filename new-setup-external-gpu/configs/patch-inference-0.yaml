@@ -1,6 +1,14 @@
 machine:
   network:
     hostname: inference-0
+    # Override the machine-patches.yaml host entry for hierophant.hierocracy.home.
+    # That patch maps it to 10.0.0.1 (talos-nat), which is unreachable from the
+    # GPU node — it has no talos-nat interface. Use 172.20.0.1 (br-app) instead.
+    extraHostEntries:
+    - ip: 172.20.0.1
+      aliases:
+      - hierophant.hierocracy.home
+      - hierophant
     interfaces:
     # MAC-based interface matching is used because the physical NIC name
     # (enp*, eno*, eth*) is hardware-dependent and not known in advance.
