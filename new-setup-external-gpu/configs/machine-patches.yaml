@@ -1,0 +1,86 @@
+machine:
+    network:
+        interfaces:
+            - interface: eth0
+              dhcp: true
+            - interface: eth1
+              dhcp: false
+        searchDomains:
+            - "hierocracy"
+            - "hierocracy.home"
+        nameservers:
+            - "192.168.1.210"
+            - "8.8.8.8"
+            - "1.1.1.1"
+        extraHostEntries:
+            # Bootstrap registry on hierophant — reachable via talos-nat (10.0.0.1)
+            - ip: 10.0.0.1
+              aliases:
+                  - hierophant.hierocracy.home
+                  - hierophant
+            # hierophant br-app address on lb-net — for cluster-local resolution
+            - ip: 172.20.0.1
+              aliases:
+                  - hierophant-app.hierocracy.home
+    time:
+        servers:
+            - "time.nist.gov"
+    features:
+        stableHostname: false
+        imageCache:
+            localEnabled: true
+    install:
+        disk: /dev/vda
+        image: hierophant.hierocracy.home:5000/siderolabs/installer-control-worker:v1.12.4
+        wipe: true
+    sysctls:
+        # Prevent inotify exhaustion under Ceph + Flannel pod density
+        fs.inotify.max_user_watches: "524288"
+        fs.inotify.max_user_instances: "512"
+        # Reduce dirty page accumulation to avoid IO stalls on Ceph block devices
+        vm.dirty_ratio: "10"
+        vm.dirty_background_ratio: "5"
+    kubelet:
+        extraArgs:
+            rotate-server-certificates: "true"
+        nodeIP:
+            validSubnets:
+                # lb-net — primary management and cluster traffic
+                - 172.20.0.0/16
+                # talos-nat — secondary, bootstrap registry access
+                - 10.0.0.0/24
+                # Physical LAN — for external node connectivity
+                - 192.168.1.0/24
+    files:
+        - content: |
+            [metrics]
+            address = "0.0.0.0:11234"
+          path: /var/cri/conf.d/metrics.toml
+          op: create
+    registries:
+        mirrors:
+            "*":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "hierophant.hierocracy.home:5000":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "registry.k8s.io":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "ghcr.io":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "docker.io":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "quay.io":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+            "registry.container-registry.svc.cluster.local:5000":
+                endpoints:
+                    - https://hierophant.hierocracy.home:5000
+        config:
+            "hierophant.hierocracy.home:5000":
+                tls:
+                    insecureSkipVerify: true
