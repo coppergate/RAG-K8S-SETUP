@@ -12,6 +12,15 @@ NEW_SETUP_DIR="${SETUP_ROOT}/new-setup-single"
 source "${NEW_SETUP_DIR}/config-env.sh"
 source "${NEW_SETUP_DIR}/scripts/journal-helper.sh"
 
+# Parse CLI flags
+WITH_GPU=false
+for arg in "$@"; do
+  case "$arg" in
+    --gpu) WITH_GPU=true ;;
+  esac
+done
+export WITH_GPU
+
 init_journal
 
 echo "Starting NEW cluster installation process..."
@@ -90,7 +99,8 @@ if ! is_step_done "apply-inference-config"; then
     mark_step_done "apply-inference-config"
 fi
 
-if ! is_step_done "setup-gpu"; then
+if [[ "${WITH_GPU:-false}" == "true" ]]; then
+  if ! is_step_done "setup-gpu"; then
     echo "[9/9] Setting up GPUs and cycling Inference nodes..."
     ${NEW_SETUP_DIR}/50-inference-gpu-setup.sh
     echo "[9a/9] Installing NVIDIA GPU Operator (driver managed by Talos)..."
@@ -98,6 +108,9 @@ if ! is_step_done "setup-gpu"; then
     echo "[9b/9] Labeling GPU inference nodes (gpu-count)..."
     ${NEW_SETUP_DIR}/55-label-gpu-nodes.sh || true
     mark_step_done "setup-gpu"
+  fi
+else
+  echo "GPU setup skipped (pass --gpu to enable)"
 fi
 
 clear_journal

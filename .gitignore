@@ -28,6 +28,10 @@ common_config/k8s/kube/kubectl
 common_config/k8s/krew/krew-linux_amd64
 common_config/k8s/krew/krew-linux_amd64.tar.gz
 
+# Remote access configuration — local artifacts only (secrets, kubeconfigs, binaries)
+# Track only README.md and the *.sh setup/hook scripts under this dir.
+remote-access-configuration/config/
+
 # Cluster state
 cluster-replicas.state
 

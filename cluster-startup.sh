@@ -3,6 +3,8 @@
 # CLUSTER STARTUP SCRIPT
 # Version: 2.3.0
 # MUST be executed on 'hierophant'
+# Usage: ./cluster-startup.sh [--no-gpu]
+#   --no-gpu  Skip GPU PCI device detach and do not start inference VMs
 # ==============================================================================
 # Ensure we have kubectl and kubeconfig
 KUBECTL="/home/k8s/kube/kubectl"
@@ -14,13 +16,27 @@ fi
 ROOK_NS="rook-ceph"
 REPLICA_FILE="/home/k8s/kube/cluster-replicas.state"
 
+# --- Argument parsing ---
+SKIP_GPU="${SKIP_GPU:-false}"
+for arg in "$@"; do
+  case "$arg" in
+    --no-gpu) SKIP_GPU=true ;;
+    *) echo "Unknown argument: $arg"; exit 1 ;;
+  esac
+done
+
 # 1. Start all VMs
 echo "Step 1: Starting all cluster VMs..."
-# Ensure GPUs are detached from host before starting inference nodes
-echo "Ensuring GPUs are detached from host..."
-sudo virsh nodedev-detach pci_0000_04_00_0 2>/dev/null || true
-sudo virsh nodedev-detach pci_0000_84_00_0 2>/dev/null || true
-VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2" "inference-0" "inference-1")
+if [[ "$SKIP_GPU" == "true" ]]; then
+    echo "  --no-gpu: skipping GPU PCI device detach and inference VMs"
+    VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2")
+else
+    # Ensure GPUs are detached from host before starting inference nodes
+    echo "Ensuring GPUs are detached from host..."
+    sudo virsh nodedev-detach pci_0000_04_00_0 2>/dev/null || true
+    sudo virsh nodedev-detach pci_0000_84_00_0 2>/dev/null || true
+    VMS=("control-0" "control-1" "control-2" "worker-0" "worker-1" "worker-2" "inference-0" "inference-1")
+fi
 for vm in "${VMS[@]}"; do
     if sudo virsh dominfo "$vm" &>/dev/null; then
         if sudo virsh list --name | grep -q "^$vm$"; then
