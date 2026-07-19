@@ -42,8 +42,7 @@ sudo -n virt-install \
   --disk path="${CONTROL_0_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \
-  --network network=talos-nat,mac="${control_0_mac}" \
-  --network network=lb-net,mac="${control_0_extern_mac}" \
+  --network network=lan,mac="${control_0_mac}" \
   --boot cdrom,hd --noautoconsole
 
 echo "--- BUILDING VM: control-1 ---"
@@ -60,8 +59,7 @@ sudo -n virt-install \
   --disk path="${CONTROL_1_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \
-  --network network=talos-nat,mac="${control_1_mac}" \
-  --network network=lb-net,mac="${control_1_extern_mac}" \
+  --network network=lan,mac="${control_1_mac}" \
   --boot cdrom,hd --noautoconsole
 
 echo "--- BUILDING VM: control-2 ---"
@@ -78,8 +76,7 @@ sudo -n virt-install \
   --disk path="${CONTROL_2_DISK}",bus=virtio \
   --cdrom "${CONTROL_NODE_IMAGE}" \
   --os-variant=linux2024 \
-  --network network=talos-nat,mac="${control_2_mac}" \
-  --network network=lb-net,mac="${control_2_extern_mac}" \
+  --network network=lan,mac="${control_2_mac}" \
   --boot cdrom,hd --noautoconsole
 
 echo ""

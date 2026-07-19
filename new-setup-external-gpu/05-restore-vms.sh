@@ -98,6 +98,6 @@ echo "Waiting for VMs to boot and negotiate network (120s)..."
 sleep 120
 
 echo "Checking bridge membership..."
-bridge link show | grep -E 'br-app|talos-bridge'
+bridge link show | grep -E 'br-lan'
 
-echo "Restoration complete. Please try pinging 172.20.1.x from hierophant again."
+echo "Restoration complete. Please try pinging 192.168.5.x from hierophant again."

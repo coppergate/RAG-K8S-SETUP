@@ -8,7 +8,7 @@ set -e
 # Run this after the cluster is up (control-plane + workers healthy).
 #
 # Steps performed:
-#   1. Verify the cluster is reachable via the VIP (172.20.0.15).
+#   1. Verify the cluster is reachable via the VIP (192.168.5.10).
 #   2. Verify the inference node is reachable in maintenance mode.
 #   3. Apply Talos configuration (calls 40-apply-inference-config.sh).
 #   4. Wait for the node to reboot, install, and rejoin.
@@ -17,9 +17,9 @@ set -e
 #   7. Print GPU operator install reminder.
 #
 # Prerequisites:
-#   - inference_0_mac set in 05-MAC-addresses.sh
-#   - GPU node booted from Talos USB and in maintenance mode
-#   - 07-config-vm-net.sh has been run (dnsmasq lease active)
+#   - inference_0_mac set in 05-MAC-addresses.sh (or export INFERENCE_MAINT_IP)
+#   - GPU node booted from Talos USB and in maintenance mode (DHCP from the LAN
+#     router); its maintenance IP is discovered via ARP by this script
 #   - Cluster is healthy (./20-bootstrap-cp.sh and ./35-apply-worker-config.sh done)
 #
 # IMPORTANT: Run on hierophant.
@@ -31,6 +31,8 @@ fi
 
 source "${SETUP_ROOT}/new-setup-external-gpu/config-env.sh"
 source "${SETUP_ROOT}/new-setup-external-gpu/config-endpoints.sh"
+source "${SETUP_ROOT}/new-setup-external-gpu/05-MAC-addresses.sh"
+source "${SETUP_ROOT}/new-setup-external-gpu/utils.sh"
 
 KUBECTL="/home/k8s/kube/kubectl"
 export KUBECONFIG="${KUBE_CONFIG}/kubeconfig"
@@ -54,23 +56,45 @@ fi
 echo "  [✓] Cluster API reachable."
 
 # ---------------------------------------------------------------------------
-# Step 2: Verify inference node is in maintenance mode
+# Step 2: Discover the GPU node's maintenance IP and verify maintenance mode
 # ---------------------------------------------------------------------------
-echo "[2/5] Verifying inference node at ${INFERENCE_IP_0} is in maintenance mode..."
+# On the flat LAN the node boots the Talos USB and DHCPs a temporary
+# 192.168.0.x lease from the router. Resolve it by MAC (ARP), unless the
+# operator provided INFERENCE_MAINT_IP explicitly (e.g. read from the console).
+echo "[2/5] Determining inference node maintenance IP..."
+if [ -n "${INFERENCE_MAINT_IP}" ]; then
+    echo "  Using operator-provided INFERENCE_MAINT_IP=${INFERENCE_MAINT_IP}"
+elif [ -n "${inference_0_mac}" ] && [ "${inference_0_mac}" != "00:00:00:00:00:00" ]; then
+    echo "  Discovering via ARP for MAC ${inference_0_mac}..."
+    INFERENCE_MAINT_IP="$(getIPByMac "${inference_0_mac}")"
+    if [ -z "${INFERENCE_MAINT_IP}" ]; then
+        prime_arp_cache; sleep 1
+        INFERENCE_MAINT_IP="$(getIPByMac "${inference_0_mac}")"
+    fi
+fi
+if [ -z "${INFERENCE_MAINT_IP}" ]; then
+    echo "ERROR: Could not determine the GPU node's maintenance IP." >&2
+    echo "  Set inference_0_mac in 05-MAC-addresses.sh, or export INFERENCE_MAINT_IP" >&2
+    echo "  to the address shown on the node's console, then re-run." >&2
+    exit 1
+fi
+export INFERENCE_MAINT_IP
+echo "  Maintenance IP: ${INFERENCE_MAINT_IP} (final static will be ${INFERENCE_IP_0})"
+
+echo "  Verifying node at ${INFERENCE_MAINT_IP} is in maintenance mode..."
 for i in $(seq 1 10); do
     if sudo -E ${TALOS_ROOT}/talosctl \
             --talosconfig "${TALOSCONFIG}" \
             get machinestatus \
-            --nodes "${INFERENCE_IP_0}" \
-            --endpoints "${INFERENCE_IP_0}" \
+            --nodes "${INFERENCE_MAINT_IP}" \
+            --endpoints "${INFERENCE_MAINT_IP}" \
             --insecure &>/dev/null; then
-        echo "  [✓] Inference node is reachable at ${INFERENCE_IP_0}."
+        echo "  [✓] Inference node is reachable at ${INFERENCE_MAINT_IP}."
         break
     fi
     if [ $i -eq 10 ]; then
-        echo "ERROR: Cannot reach inference node at ${INFERENCE_IP_0}." >&2
-        echo "  Ensure the node is booted from the Talos USB and has received its DHCP lease." >&2
-        echo "  Check dnsmasq log: sudo cat /var/log/dnsmasq-br-app-enrollment.log" >&2
+        echo "ERROR: Cannot reach inference node at ${INFERENCE_MAINT_IP}." >&2
+        echo "  Ensure the node is booted from the Talos USB and has a DHCP lease." >&2
         exit 1
     fi
     echo "  [!] Not yet reachable (attempt $i/10). Retrying in 15s..."
@@ -138,7 +162,7 @@ echo " External GPU node enrollment complete!"
 echo "======================================================="
 echo " Node     : inference-0"
 echo " IP       : ${INFERENCE_IP_0}"
-echo " Network  : lb-net (172.20.x.x) — reachable from hierophant and cluster"
+echo " Network  : flat LAN (192.168.5.x) — reachable from every host and the cluster"
 echo ""
 echo " Next steps:"
 echo "   ./52-install-gpu-operator.sh   — Install NVIDIA GPU Operator"

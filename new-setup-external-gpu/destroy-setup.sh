@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Destroy script for new-setup-single.
+# Destroy script for new-setup-external-gpu (flat LAN).
 # Tears down all VMs and cleans up virsh/network/sysctl objects created by
-# the 10-build-control-plane.sh and 30-build-all-workers.sh scripts.
+# the network/ scripts, 10-build-control-plane.sh and 30-build-all-workers.sh.
 
 set -e
 
@@ -30,9 +30,9 @@ for vm in control-0 control-1 control-2 worker-0 worker-1 worker-2 worker-3; do
     fi
 done
 
-# Stop and undefine networks
+# Stop and undefine networks (lan = current; talos-nat/lb-net = legacy cleanup)
 echo "Stopping and removing networks..."
-for net in talos-nat lb-net; do
+for net in lan talos-nat lb-net; do
     if sudo virsh net-info "$net" &>/dev/null; then
         echo "  Removing network: $net"
         sudo virsh net-destroy "$net" 2>/dev/null || true
@@ -40,11 +40,11 @@ for net in talos-nat lb-net; do
     fi
 done
 
-# Remove physical bridges via nmcli
+# Remove physical bridges via nmcli (br-lan = current; br-app/br-lan-enp5s0 = ports/legacy)
 echo "Removing physical bridges..."
-for br in br-mgmt br-app; do
+for br in br-lan br-lan-enp5s0 br-mgmt br-app; do
     if nmcli connection show "$br" &>/dev/null; then
-        echo "  Deleting bridge: $br"
+        echo "  Deleting bridge/port: $br"
         sudo nmcli connection delete "$br" 2>/dev/null || true
     fi
 done
@@ -53,15 +53,15 @@ done
 sudo ip route del 172.20.0.0/16 2>/dev/null || true
 sudo ip route del 172.16.0.0/16 2>/dev/null || true
 
-echo "Restoring management IP to physical interface enp5s0..."
+echo "Restoring management IP to physical interface enp5s0 (flat LAN /16)..."
 sudo nmcli connection add type ethernet con-name enp5s0 ifname enp5s0 \
-    ipv4.method manual ipv4.addresses 192.168.1.101/24 \
-    ipv4.gateway 192.168.1.1 \
+    ipv4.method manual ipv4.addresses 192.168.1.101/16 \
+    ipv4.gateway 192.168.0.1 \
     ipv4.dns "192.168.1.210,1.1.1.1,8.8.8.8" \
     ipv4.dns-search "hierocracy,hierocracy.home" 2>/dev/null || \
 sudo nmcli connection modify enp5s0 \
-    ipv4.method manual ipv4.addresses 192.168.1.101/24 \
-    ipv4.gateway 192.168.1.1 \
+    ipv4.method manual ipv4.addresses 192.168.1.101/16 \
+    ipv4.gateway 192.168.0.1 \
     ipv4.dns "192.168.1.210,1.1.1.1,8.8.8.8" \
     ipv4.dns-search "hierocracy,hierocracy.home"
 sudo nmcli connection up enp5s0 || true
@@ -112,7 +112,7 @@ done
 
 # Clean up generated XML files
 echo "Removing generated XML files..."
-rm -f talos-nat.xml lb-net.xml
+rm -f talos-nat.xml lb-net.xml lan-net.xml /tmp/lan-net.xml
 
 # Clean up NAT and Forwarding rules
 for subnet in 10.0.0.0/24 172.20.0.0/16; do
@@ -134,7 +134,7 @@ sudo rm -f \
     /etc/sysctl.d/99-k8s-routing.conf \
     /etc/sysctl.d/99-bridge-nf.conf
 
-for iface in all default enp5s0 eno1 br-app; do
+for iface in all default enp5s0 eno1 br-app br-lan; do
     sudo sysctl -w net.ipv4.conf.${iface}.arp_ignore=0 2>/dev/null || true
     sudo sysctl -w net.ipv4.conf.${iface}.arp_announce=0 2>/dev/null || true
     sudo sysctl -w net.ipv4.conf.${iface}.rp_filter=1 2>/dev/null || true

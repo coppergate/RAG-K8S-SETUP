@@ -2,61 +2,39 @@
 
 This document covers the steps specific to enrolling the physical GPU inference node
 into the `new-setup-external-gpu` cluster. The base cluster (control-plane + workers)
-is set up by `config-cluster.sh` first.
+is set up by `config-cluster.sh` first. For the overall network design see
+[`network/README.md`](network/README.md).
 
 ---
 
 ## Network Topology
 
+The cluster runs on a **flat LAN** (`192.168.0.0/16`). The GPU node is just another
+physical host on that LAN — no VLANs, no trunks, no NAT.
+
 ```
-                    ┌─────────────────────────────┐
-                    │  hierophant                  │
-                    │  enp5s0: 192.168.1.101/24    │
-                    │  eno1.20 → br-app            │
-                    │  br-app: 172.20.0.1/16       │
-                    └────────┬────────────────┬────┘
-                             │ enp5s0         │ eno1 (VLAN 20 tagged)
-                             │                │
-                        ─────┴──────    ──────┴──────
-                          Switch 1       Switch 1
-                        (192.168.1.x)  (trunk VLAN 20)
-                             │                │
-                        ─────┘       ─────────┴─────────
-                                       inter-switch trunk
-                                       (VLAN 20 allowed)
-                                     ─────────┴─────────
-                                           Switch 2
-                                      (access port VLAN 20)
-                                           │
-                                     ──────┴──────
-                                       GPU node
-                                     NIC: 172.20.1.120/16
-                                     GW:  192.168.1.1
+        192.168.0.0/16  (router / DHCP / gateway @ 192.168.0.1)
+                     │  (single switched L2 — everything plugged in)
+   ┌─────────────────┼───────────────────────┬─────────────────┐
+ hierophant        hegemon                GPU node
+ br-lan/enp5s0     br-lan/eno1            bare-metal Talos
+ 192.168.1.101/16  192.168.1.100/16       eth0: 192.168.5.31/16
+   ├─ control-0/1/2   └─ dev-fedora VM     GW:  192.168.0.1
+   └─ worker-0..3        192.168.1.50/16
 ```
 
 ### Switch Configuration Requirements
 
-**Switch 1 (main, connected to hierophant):**
-| Port | Config |
-|------|--------|
-| Port connected to `eno1` | Trunk, VLAN 20 allowed (tagged) |
-| Inter-switch uplink to Switch 2 | Trunk, VLAN 20 allowed (tagged) |
-
-**Switch 2 (secondary, connected to GPU node):**
-| Port | Config |
-|------|--------|
-| Inter-switch uplink from Switch 1 | Trunk, VLAN 20 allowed (tagged) |
-| Port connected to GPU node NIC | **Access port, VLAN 20 (untagged)** |
-
-> With an access port on VLAN 20 for the GPU node, no VLAN configuration is needed
-> in Talos. The node just configures a plain IP (172.20.1.120) on its physical NIC.
+None beyond plugging the GPU node into the same LAN. There is **no VLAN** — the GPU
+node's NIC is an ordinary access port on the flat LAN, and Talos configures a plain
+static IP (`192.168.5.31/16`) on it, matched by MAC.
 
 ---
 
 ## Pre-Enrollment Checklist
 
-- [ ] `inference_0_mac` set in `05-MAC-addresses.sh` to GPU node's actual NIC MAC
-- [ ] `hardwareAddr` in `configs/patch-inference-0.yaml` matches the same MAC
+- [ ] `inference_0_mac` set in `05-MAC-addresses.sh` to the GPU node's actual NIC MAC
+- [ ] `deviceSelector.hardwareAddr` in `configs/patch-inference-0.yaml` matches the same MAC
 - [ ] Install disk confirmed (see "Identifying the Disk" below)
 - [ ] Installer image confirmed in registry (see "Talos Image" below)
 - [ ] Cluster is healthy (`kubectl get nodes` shows control-plane + workers Ready)
@@ -68,23 +46,27 @@ Options (before Talos boot):
 - Boot a live Linux USB, run: `ip link show`
 
 Options (after Talos USB boot, in maintenance mode):
-- The Talos console UI shows the interface MAC address
-- From hierophant, query via dnsmasq lease log:
+- The Talos console UI shows the interface MAC and its DHCP-assigned IP
+- From hierophant, once you know the MAC, resolve the maintenance IP via ARP:
   ```bash
-  sudo cat /var/log/dnsmasq-br-app-enrollment.log | grep DHCP
+  # prime the neighbour table, then look up the MAC on br-lan
+  for i in $(seq 2 254); do ping -c1 -W1 192.168.0.$i >/dev/null 2>&1 & done; wait
+  ip neigh show dev br-lan | grep -i "<gpu-node-mac>"
   ```
+  `45-enroll-external-node.sh` performs this discovery automatically.
 
 ---
 
 ## Identifying the Install Disk
 
-After the GPU node boots from the Talos USB (maintenance mode), find its disk:
+After the GPU node boots from the Talos USB (maintenance mode) it gets a temporary
+`192.168.0.x` DHCP lease from the router. Using that maintenance IP:
 
 ```bash
 sudo /home/k8s/talos/talosctl disks \
     --insecure \
-    --nodes 172.20.1.120 \
-    --endpoints 172.20.1.120
+    --nodes <maintenance-ip> \
+    --endpoints <maintenance-ip>
 ```
 
 Update `configs/patch-inference-0.yaml` with the correct device:
@@ -162,12 +144,16 @@ Use the Talos Image Factory to generate a custom installer with NVIDIA extension
 
 ## PXE/TFTP Boot (Future Reference)
 
-For automated GPU node provisioning without a USB drive, set up PXE boot:
+For automated GPU node provisioning without a USB drive, set up PXE boot. On the flat
+LAN the node PXE-boots against a TFTP server reachable on `192.168.0.0/16`.
 
 ### Prerequisites
-- A TFTP server on hierophant (or a dedicated machine)
+- A TFTP server on hierophant (or a dedicated machine) reachable on the LAN
 - The GPU node's NIC configured to PXE boot (BIOS setting)
-- The inter-switch trunk must allow the VLAN 20 PXE broadcast through
+- A DHCP `next-server`/`filename` option pointing PXE clients at the TFTP server.
+  The LAN router (`192.168.0.1`) is the DHCP authority — either set PXE options
+  there, or run a helper `dnsmasq --enable-tftp --dhcp-boot=...` bound to `br-lan`
+  on hierophant that answers only the GPU node's MAC (`--dhcp-host`).
 
 ### Setup on hierophant
 
@@ -202,23 +188,11 @@ For automated GPU node provisioning without a USB drive, set up PXE boot:
      APPEND ip=dhcp talos.config=none
    ```
 
-4. **Add dnsmasq PXE options** to `/etc/dnsmasq.d/br-app-enrollment.conf`:
-   ```
-   # Enable PXE boot
-   dhcp-boot=pxelinux.0
-   enable-tftp
-   tftp-root=/var/lib/tftpboot
-   ```
-
-5. **Firewall:** Allow TFTP (port 69/UDP) on the `br-app` interface:
+4. **Firewall:** Allow TFTP (port 69/UDP) on the `br-lan` interface:
    ```bash
    sudo firewall-cmd --add-port=69/udp --zone=trusted --permanent
    sudo firewall-cmd --reload
    ```
-
-> **Note:** PXE boot broadcasts are confined to the VLAN segment. The GPU node
-> on Switch 2 VLAN 20 access port will broadcast DHCP/PXE requests that traverse
-> the VLAN 20 trunk to hierophant's br-app dnsmasq.
 
 ---
 
@@ -229,18 +203,18 @@ For automated GPU node provisioning without a USB drive, set up PXE boot:
 cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
 
 # 1. Set the GPU node MAC (after finding it via console or BIOS)
-vi 05-MAC-addresses.sh          # set inference_0_mac
-vi configs/patch-inference-0.yaml  # set hardwareAddr, confirm disk
+vi 05-MAC-addresses.sh             # set inference_0_mac
+vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr, confirm disk
 
-# 2. Refresh the br-app dnsmasq with the correct MAC
-sudo ./07-config-vm-net.sh
+# 2. Boot GPU node from Talos USB — it gets a temporary 192.168.0.x lease from
+#    the router. 45-enroll discovers that maintenance IP by MAC (ARP).
 
-# 3. Boot GPU node from Talos USB — it should get 172.20.1.120 via DHCP
-
-# 4. Run full enrollment
+# 3. Run full enrollment (applies config; node reboots onto static 192.168.5.31)
 ./45-enroll-external-node.sh
+#    If the MAC isn't set, pass the maintenance IP explicitly:
+#    INFERENCE_MAINT_IP=192.168.0.NN ./45-enroll-external-node.sh
 
-# 5. Install GPU Operator and label the node
+# 4. Install GPU Operator and label the node
 ./52-install-gpu-operator.sh
 ./55-label-gpu-nodes.sh
 ```

@@ -3,13 +3,13 @@ machine:
     hostname: control-0
     interfaces:
     - interface: eth0
-      # talos-nat (10.0.0.x) — bootstrap registry access and initial config apply only
-      dhcp: true
-    - interface: eth1
-      # lb-net (172.20.x.x) — PRIMARY management interface
-      # VIP 172.20.0.15 floats here on whichever control-plane node is leader
+      # Flat LAN — single management interface.
+      # VIP 192.168.5.10 floats here on whichever control-plane node is leader.
       dhcp: false
       addresses:
-      - 172.20.0.100/16
+      - 192.168.5.11/16
+      routes:
+      - network: 0.0.0.0/0
+        gateway: 192.168.0.1
       vip:
-        ip: 172.20.0.15
+        ip: 192.168.5.10

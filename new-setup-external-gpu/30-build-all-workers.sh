@@ -75,7 +75,6 @@ WORKER_VCPUS=(8 8 8 14)
 echo "BUILDING WORKER NODES (4 workers)"
 for i in {0..3}; do
   mac_var="data_${i}_mac"
-  extern_mac_var="data_${i}_extern_mac"
   disk_var="WORKER_${i}_DISK"
   name="worker-${i}"
   cpuset="${WORKER_CPUSETS[$i]}"
@@ -99,8 +98,7 @@ for i in {0..3}; do
     --disk path="${!disk_var}",bus=virtio \
     --cdrom "${WORKER_NODE_IMAGE}" \
     --os-variant=linux2024 \
-    --network network=talos-nat,mac="${!mac_var}" \
-    --network network=lb-net,mac="${!extern_mac_var}" \
+    --network network=lan,mac="${!mac_var}" \
     --boot cdrom,hd --noautoconsole
 done
 

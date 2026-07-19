@@ -1,38 +1,33 @@
 machine:
   network:
     hostname: inference-0
-    # Override the machine-patches.yaml host entry for hierophant.hierocracy.home.
-    # That patch maps it to 10.0.0.1 (talos-nat), which is unreachable from the
-    # GPU node — it has no talos-nat interface. Use 172.20.0.1 (br-app) instead.
-    extraHostEntries:
-    - ip: 172.20.0.1
-      aliases:
-      - hierophant.hierocracy.home
-      - hierophant
+    # No extraHostEntries override needed: machine-patches.yaml already maps
+    # hierophant.hierocracy.home -> 192.168.1.101, which is directly reachable
+    # on the flat LAN from this physical node.
     interfaces:
-    # MAC-based interface matching is used because the physical NIC name
-    # (enp*, eno*, eth*) is hardware-dependent and not known in advance.
-    # Talos will apply this config to whichever NIC has the matching MAC.
+    # MAC-based interface matching (deviceSelector) is used because the physical
+    # NIC name (enp*, eno*, eth*) is hardware-dependent and not known in advance.
+    # Talos applies this config to whichever NIC has the matching MAC.
     #
-    # TODO: Set hardwareAddr to the GPU node's actual NIC MAC address.
+    # TODO: Set deviceSelector.hardwareAddr to the GPU node's actual NIC MAC.
     #       Run 'ip link show' on the node (via console) or check BIOS/UEFI.
     #       This MAC must match inference_0_mac in 05-MAC-addresses.sh.
-    - hardwareAddr: "00:00:00:00:00:00"   # TODO: set to actual GPU node NIC MAC
+    - deviceSelector:
+        hardwareAddr: "00:00:00:00:00:00"   # TODO: set to actual GPU node NIC MAC
       dhcp: false
       addresses:
-      - 172.20.1.120/16
+      - 192.168.5.31/16
       routes:
-      # Default gateway — main LAN router, reachable from the 172.20.x.x VLAN
+      # Default gateway — the LAN router.
       - network: 0.0.0.0/0
-        gateway: 192.168.1.1
+        gateway: 192.168.0.1
   install:
     # TODO: Confirm the install disk device name before applying.
-    #       In maintenance mode: talosctl disks --insecure -n 172.20.1.120
+    #       In maintenance mode: talosctl disks --insecure -n <maintenance-ip>
     #       Typically /dev/sda for a single SSD; may be /dev/nvme0n1 for NVMe.
     disk: /dev/sda
     # GPU node requires a Talos installer image with NVIDIA system extensions.
     # See EXTERNAL-NODE-SETUP.md for how to build or locate this image.
-    # If you have an existing GPU image in the registry, update this path.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4
     wipe: true
   nodeLabels:

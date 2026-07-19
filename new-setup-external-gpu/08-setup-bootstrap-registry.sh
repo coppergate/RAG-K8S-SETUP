@@ -58,7 +58,7 @@ if [ ! -f "${REGISTRY_CONFIG_DIR}/tls.crt" ]; then
         -keyout "${REGISTRY_CONFIG_DIR}/tls.key" \
         -out "${REGISTRY_CONFIG_DIR}/tls.crt" \
         -subj "/C=US/ST=CO/L=Denver/O=coppergate/CN=hierophant.hierocracy.home" \
-        -addext "subjectAltName=DNS:hierophant.hierocracy.home,DNS:localhost,IP:10.0.0.1,IP:127.0.0.1"
+        -addext "subjectAltName=DNS:hierophant.hierocracy.home,DNS:registry.hierocracy.home,DNS:localhost,IP:192.168.1.101,IP:127.0.0.1"
 fi
 
 # 1.3 Ensure registry:2 image is available in the root podman store.

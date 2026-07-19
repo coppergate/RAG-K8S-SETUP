@@ -2,16 +2,16 @@
 set -e
 
 # ==============================================================================
-# APPLY CONTROL PLANE CONFIG — new-setup-external-gpu
+# APPLY CONTROL PLANE CONFIG — new-setup-external-gpu (flat LAN)
 #
 # TWO-PHASE APPROACH:
-#   Phase 1 — Initial apply uses BOOT_IP_* (10.0.0.x, talos-nat DHCP).
-#              Nodes are in Talos maintenance mode at these addresses.
-#   Phase 2 — talosconfig endpoints are updated to CP_IP_* (172.20.0.x, lb-net).
-#              These are the permanent management addresses after config is applied.
+#   Phase 1 — Initial apply uses BOOT_IP_* (192.168.0.x, router DHCP in
+#              maintenance mode; discovered via ARP by getNodeIP).
+#   Phase 2 — talosconfig endpoints are updated to CP_IP_* (192.168.5.x, the
+#              permanent static management addresses on the flat LAN).
 #
-# The cluster endpoint (in cluster-patches.yaml) is https://172.20.0.15:6443
-# (the VIP on eth1/lb-net). This is baked into the generated config.
+# The cluster endpoint (in cluster-patches.yaml) is https://192.168.5.10:6443
+# (the VIP on eth0). This is baked into the generated config.
 # ==============================================================================
 
 if [ -z "${SETUP_ROOT}" ]; then
@@ -29,15 +29,15 @@ sudo rm -rf "${TALOS_CONFIG}"
 sudo mkdir -p "${TALOS_CONFIG}"
 
 # Generate base config. The URL here is a placeholder — the real cluster endpoint
-# (https://172.20.0.15:6443) is set by configs/cluster-patches.yaml below.
+# (https://192.168.5.10:6443) is set by configs/cluster-patches.yaml below.
 sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_VIP}:6443" \
     --install-disk /dev/vda \
     --install-image "${INSTALLER_IMAGE}" \
     --output "${TALOS_CONFIG}" \
     --force
 
-# Set talosconfig endpoints and nodes to the permanent lb-net IPs (172.20.0.x)
-echo "Updating talosconfig with management endpoints (172.20.0.x)..."
+# Set talosconfig endpoints and nodes to the permanent static IPs (192.168.5.x)
+echo "Updating talosconfig with management endpoints (192.168.5.x)..."
 sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
     config endpoint "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
 sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
@@ -51,8 +51,8 @@ for f in "controlplane.yaml" "worker.yaml"; do
 
     # Apply global patches:
     #   machine-patches.yaml     — site-wide machine settings (DNS, NTP, kubelet, etc.)
-    #   cluster-patches.yaml     — sets cluster endpoint to https://172.20.0.15:6443
-    #   talos-registry-patch.yaml — registry mirrors with bootstrap fallback (10.0.0.1:5000)
+    #   cluster-patches.yaml     — sets cluster endpoint to https://192.168.5.10:6443
+    #   talos-registry-patch.yaml — registry mirrors (registry.hierocracy.home:5000)
     sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
         --patch @${SETUP_ROOT}/new-setup-external-gpu/configs/machine-patches.yaml \
         --patch @${SETUP_ROOT}/new-setup-external-gpu/configs/cluster-patches.yaml \
@@ -62,9 +62,9 @@ for f in "controlplane.yaml" "worker.yaml"; do
 done
 
 # ---------------------------------------------------------------------------
-# Phase 1: Apply config using BOOT_IPs (10.0.0.x talos-nat, maintenance mode)
+# Phase 1: Apply config using BOOT_IPs (192.168.0.x router DHCP, maintenance mode)
 # ---------------------------------------------------------------------------
-echo "Applying configurations to control-plane nodes via boot-time IPs (10.0.0.x)..."
+echo "Applying configurations to control-plane nodes via boot-time IPs (192.168.0.x)..."
 BOOT_IPS=("${BOOT_IP_0}" "${BOOT_IP_1}" "${BOOT_IP_2}")
 i=0
 for ip in "${BOOT_IPS[@]}"; do
@@ -81,8 +81,8 @@ done
 
 echo ""
 echo "=== CONTROL PLANE CONFIG APPLIED ==="
-echo "Talosconfig endpoints set to: ${CP_IP_0} ${CP_IP_1} ${CP_IP_2} (172.20.0.x / lb-net)"
-echo "Cluster VIP: ${CP_VIP} (eth1, applied via patch-control-*.yaml)"
+echo "Talosconfig endpoints set to: ${CP_IP_0} ${CP_IP_1} ${CP_IP_2} (192.168.5.x / flat LAN)"
+echo "Cluster VIP: ${CP_VIP} (eth0, applied via patch-control-*.yaml)"
 echo ""
 echo "Monitor installation on control-0 with:"
 echo "  talosctl --talosconfig ${TALOSCONFIG} logs -n ${CP_IP_0} --endpoints ${CP_IP_0} installer"

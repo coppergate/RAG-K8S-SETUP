@@ -48,10 +48,63 @@ countdown_with_check() {
 }
 
 
+# ---------------------------------------------------------------------------
+# Flat-LAN node discovery (maintenance mode)
+# ---------------------------------------------------------------------------
+# On the flat LAN, VMs attach to a pure libvirt bridge network ('lan' over
+# br-lan). A pure bridge has NO libvirt DHCP leases, so `virsh domifaddr`
+# (lease source) returns nothing. Instead we resolve the VM's pinned MAC
+# against the host neighbour (ARP) table, priming it with a quick ping-sweep
+# of the router's DHCP pool if the entry isn't present yet.
+#
+# Boot/maintenance-mode nodes DHCP a temporary address from the router
+# (192.168.0.2-254); after apply-config they take their static 192.168.5.x IP.
+#
+# Overridable:
+#   DHCP_SWEEP_NET  — first three octets of the router DHCP pool (default 192.168.0)
+#   LAN_BRIDGE      — host bridge the VMs attach to           (default br-lan)
+DHCP_SWEEP_NET="${DHCP_SWEEP_NET:-192.168.0}"
+LAN_BRIDGE="${LAN_BRIDGE:-br-lan}"
+
+# Prime the neighbour table with a parallel ping-sweep across the DHCP pool.
+prime_arp_cache() {
+  local i
+  for i in $(seq 2 254); do
+    ping -c1 -W1 "${DHCP_SWEEP_NET}.${i}" >/dev/null 2>&1 &
+  done
+  wait 2>/dev/null || true
+}
+
+# First MAC of a libvirt domain (VMs have a single NIC on the lan network).
+getVMMac() {
+  local nodeName="$1"
+  sudo virsh domiflist "${nodeName}" 2>/dev/null \
+    | grep -Eio '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -n1
+}
+
+# Resolve an IPv4 address from the neighbour table by MAC (br-lan).
+getIPByMac() {
+  local mac="$1"
+  [ -z "$mac" ] && return 1
+  ip neigh show dev "${LAN_BRIDGE}" 2>/dev/null \
+    | awk -v m="$(printf '%s' "$mac" | tr 'A-Z' 'a-z')" \
+          'tolower($0) ~ m && $1 ~ /^[0-9]+\./ {print $1; exit}'
+}
+
+# Discover a VM's current (maintenance-mode DHCP) IP on the flat LAN.
+# Returns empty string if it cannot be resolved (e.g. bare-metal domains).
 getNodeIP(){
-  local nodeName=$1
-  result=$(sudo virsh domifaddr "${nodeName}" | grep -E '/' | awk '{print $4}' | cut -d/ -f1 | head -n 1)
-  echo "$result"
+  local nodeName="$1"
+  local mac ip
+  mac="$(getVMMac "${nodeName}")"
+  [ -z "$mac" ] && { echo ""; return 0; }
+  ip="$(getIPByMac "$mac")"
+  if [ -z "$ip" ]; then
+    prime_arp_cache
+    sleep 1
+    ip="$(getIPByMac "$mac")"
+  fi
+  echo "$ip"
 }
 
 

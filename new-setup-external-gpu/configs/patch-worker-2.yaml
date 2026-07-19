@@ -3,8 +3,10 @@ machine:
     hostname: worker-2
     interfaces:
     - interface: eth0
-      dhcp: true
-    - interface: eth1
+      # Flat LAN — single management interface.
       dhcp: false
       addresses:
-      - 172.20.0.112/16
+      - 192.168.5.23/16
+      routes:
+      - network: 0.0.0.0/0
+        gateway: 192.168.0.1
