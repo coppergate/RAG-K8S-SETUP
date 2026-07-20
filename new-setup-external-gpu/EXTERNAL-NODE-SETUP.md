@@ -81,6 +81,15 @@ The GPU node requires a Talos installer image built with the NVIDIA system exten
 (kernel modules, container toolkit, etc.). This is different from the standard
 `installer-control-worker` image used by VMs on hierophant.
 
+### Seeded Automatically (default)
+
+`08-setup-bootstrap-registry.sh` seeds `siderolabs/installer-gpu:v1.12.4` into the
+registry alongside the standard installers, pulling from the Talos Image Factory
+schematic `4b03bd8a24f08b4e9a58d122191901bf5e8751eb03e0fc489e59416ab7fb597f`
+(NVIDIA `nonfree-kmod-nvidia` + `nvidia-container-toolkit`). No manual build is
+required unless you need a different schematic or Talos version. The sections below
+are only needed to change extensions or the Talos version.
+
 ### Using an Existing Image
 
 If you already have a GPU installer image in the registry, update `patch-inference-0.yaml`:
@@ -114,13 +123,13 @@ Use the Talos Image Factory to generate a custom installer with NVIDIA extension
    SCHEMATIC_ID="<your-schematic-id>"
    TALOS_VERSION="v1.12.4"
 
-   # Pull from Talos Image Factory
+   # Pull from Talos Image Factory (metal-installer — bare-metal platform, v1.12.4)
    podman pull \
-       "factory.talos.dev/installer/${SCHEMATIC_ID}:${TALOS_VERSION}"
+       "factory.talos.dev/metal-installer/${SCHEMATIC_ID}:${TALOS_VERSION}"
 
    # Retag and push to local registry
    podman tag \
-       "factory.talos.dev/installer/${SCHEMATIC_ID}:${TALOS_VERSION}" \
+       "factory.talos.dev/metal-installer/${SCHEMATIC_ID}:${TALOS_VERSION}" \
        "hierophant.hierocracy.home:5000/siderolabs/installer-gpu:${TALOS_VERSION}"
 
    podman push \

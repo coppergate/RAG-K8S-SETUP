@@ -136,6 +136,11 @@ seed_image() {
 # 2.1 Talos Installers
 seed_image "factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846:v1.12.4" "siderolabs/installer-control-worker:v1.12.4"
 
+# GPU installer for the external inference node (schematic adds NVIDIA extensions:
+# nonfree-kmod-nvidia + nvidia-container-toolkit). Consumed by
+# configs/patch-inference-0.yaml -> machine.install.image. See EXTERNAL-NODE-SETUP.md.
+seed_image "factory.talos.dev/metal-installer/4b03bd8a24f08b4e9a58d122191901bf5e8751eb03e0fc489e59416ab7fb597f:v1.12.4" "siderolabs/installer-gpu:v1.12.4"
+
 # 2.2 Kubernetes Control Plane Images (v1.35.0)
 seed_image "registry.k8s.io/etcd:v3.6.7" "registry.k8s.io/etcd:v3.6.7"
 seed_image "registry.k8s.io/etcd:v3.6.7" "etcd:v3.6.7"
