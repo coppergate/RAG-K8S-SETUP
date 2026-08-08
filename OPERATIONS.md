@@ -260,6 +260,54 @@ The cluster uses `k8tz` to inject the `Europe/London` (BST) timezone into all po
 -   **Inclusion**: All namespaces except `k8tz` itself are included (including `kube-system`).
 -   **Verification**: `date` inside pods should show `BST`.
 
+### 1.9 `/boot` Space and Initramfs Size (hierophant)
+
+**Failure seen 2026-08-08.** A kernel update installed `6.12.0-211.44.1` but
+produced **no initramfs**: `dracut` needed ~160M in `/boot` and had 108M free, so
+it failed in `%post` while the RPM transaction succeeded anyway. GRUB's BLS
+default follows the newest kernel, so the host would not boot it.
+
+The numbers make this structural rather than bad luck:
+
+```text
+/boot            781M
+initramfs        ~152M each  (+ ~40M kdump, + 16M vmlinuz per kernel)
+rescue image     ~176M
+installonly_limit=3  ->  ~821M required  ->  exceeds the partition
+```
+
+**Recovery** (from a working kernel):
+
+```bash
+sudo dnf remove --oldinstallonly --setopt=installonly_limit=2 -y
+sudo dracut --force --kver <new-kernel-version>
+ls -lh /boot/initramfs-<new-kernel-version>.img     # MUST exist before rebooting
+sudo grubby --set-default=/boot/vmlinuz-<new-kernel-version>
+```
+
+> Do not reboot until that `ls` shows a ~150M file. If `dracut` hit the space
+> wall again you will land straight back in an unbootable default entry.
+
+**Diagnosis notes.** `hostonly="yes"` is already set by the distro
+(`/usr/lib/dracut/dracut.conf.d/01-dist.conf`), which is why kernel modules are
+only ~9.7M — there is no win available there. The bulk is firmware (~104M) and
+generic userspace (~109M), measured uncompressed. Beware that `lsinitrd -s`
+sorts **ascending**, so use `tail`, not `head`, to see the largest entries.
+
+**Reducing it** — use `trim-initramfs.sh` in the repo root:
+
+```bash
+sudo ./trim-initramfs.sh analyze                      # report only, changes nothing
+sudo OMIT_DRIVERS="amdgpu i915" ./trim-initramfs.sh apply --kver <ver> --yes
+sudo ./trim-initramfs.sh rollback --kver <ver>        # if the trim misbehaves
+```
+
+It trims **one kernel at a time**, leaving the other kernel and the rescue image
+untouched as fallbacks, backs the original up outside `/boot`, and after
+regenerating diffs the module list against the original — any module that
+disappeared without being named in `OMIT_DRIVERS`, or any loss of `xfs`/`dm_mod`/
+`lvm`, triggers an automatic rollback.
+
 ## 2. Operational Procedures & Session Management
 
 ### 2.1 Session Establishment (Operational Context)
