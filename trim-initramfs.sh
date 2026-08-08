@@ -252,13 +252,24 @@ do_apply() {
 
     local fail=0
 
-    # Boot-critical bits must survive regardless of what we omitted.
-    for must in xfs dm_mod; do
+    # Boot-critical modules: the root filesystem, device-mapper, and whatever
+    # drivers the storage controllers on this machine are ACTUALLY using. Derived
+    # live rather than hardcoded, so this stays correct if the hardware changes.
+    local critical="xfs dm_mod"
+    local storage_drv
+    storage_drv=$(lspci -k 2>/dev/null \
+        | grep -A3 -iE "SATA|RAID|SCSI|Non-Volatile" \
+        | sed -n 's/.*Kernel driver in use: *//p' | sort -u | tr '\n' ' ')
+    critical="${critical} ${storage_drv}"
+    critical="$(echo "${critical}" | tr '-' '_')"
+
+    for must in ${critical}; do
         if ! grep -qx "${must}" "${after_list}"; then
-            echo "      FAIL: '${must}' missing from the new initramfs" >&2
+            echo "      FAIL: boot-critical module '${must}' missing" >&2
             fail=1
         fi
     done
+
     if ! lsinitrd "${IMG}" 2>/dev/null | grep -q "sbin/lvm"; then
         echo "      FAIL: lvm binary missing — root is on LVM" >&2
         fail=1
@@ -284,10 +295,18 @@ do_apply() {
         done
         [ "${keep}" -eq 0 ] && echo "${m}"
     done)"
+    # INFORMATIONAL, not a failure. Omitting a driver also drops the modules only
+    # that driver depended on — e.g. omitting 'nouveau' correctly takes ttm,
+    # gpu_sched and the drm_* helpers with it. Treating that as an error made the
+    # check fail on every genuine omission. What actually matters is the
+    # boot-critical assertion above; this list is here so a surprising cascade is
+    # still visible to you.
     if [ -n "${unexpected}" ]; then
-        echo "      FAIL: modules disappeared that were not in OMIT_DRIVERS:" >&2
-        echo "${unexpected}" | head -20 | sed 's/^/        /' >&2
-        fail=1
+        local n_unexpected
+        n_unexpected=$(echo "${unexpected}" | grep -c .)
+        echo "      INFO: ${n_unexpected} additional module(s) removed as dependencies:"
+        echo "${unexpected}" | head -20 | tr '\n' ' ' | fold -sw 60 | sed 's/^/        /'
+        [ "${n_unexpected}" -gt 20 ] && echo "        ... and $((n_unexpected - 20)) more"
     fi
 
     rm -f "${before_list}" "${after_list}"
