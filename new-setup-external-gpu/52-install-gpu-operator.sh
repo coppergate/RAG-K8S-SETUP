@@ -28,6 +28,50 @@ if [ -n "${GPU_OPERATOR_CHART_VERSION:-}" ]; then
   CHART_VERSION_FLAG="--version ${GPU_OPERATOR_CHART_VERSION}"
 fi
 
+# ---------------------------------------------------------------------------
+# Heterogeneous GPU inventory — inference-0 holds THREE GPUs of TWO models:
+#
+#   idx  UUID                                      model            mem      PCI
+#   0    GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb  Tesla V100 32GB  32768MB  05:00.0
+#   1    GPU-6a3e90b5-542c-4189-8385-62224608c4fa  Tesla P4          7680MB  81:00.0
+#   2    GPU-d5cfa048-3ff2-dcec-f9bc-d0c7797dfbb5  Tesla P4          7680MB  82:00.0
+#
+# Only the V100 is advertised as nvidia.com/gpu. GPU Feature Discovery assumes a
+# homogeneous node: it derives nvidia.com/gpu.product, .memory and .compute.* from
+# a single device and applies them node-wide. Advertising all three would label
+# the node "Tesla V100 / 32GB / sm_70" while two of the three are actually P4s at
+# 8GB / sm_61 — so a pod scheduled by those labels could land on a P4 and fail on
+# either memory or CUDA arch.
+#
+# The P4s remain physically present and driver-managed; they are simply not
+# offered to the scheduler. They are recorded on the node via the
+# hierocracy.home/* labels applied in the preflight below.
+#
+# To re-derive these UUIDs after a hardware change (nvidia-smi is not directly
+# runnable on Talos, so this goes through a throwaway pod on the node):
+#
+#   kubectl run gpu-probe --restart=Never --rm -i \
+#     --image=hierophant.hierocracy.home:5000/nvcr.io/nvidia/k8s-device-plugin:v0.18.1 \
+#     --overrides='{"spec":{"nodeName":"inference-0"}}' \
+#     --env=NVIDIA_VISIBLE_DEVICES=all --env=NVIDIA_DRIVER_CAPABILITIES=utility \
+#     -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
+#
+# Override ADVERTISED_GPU_UUIDS to change which devices are schedulable. Set it to
+# "all" to advertise every GPU (only correct on a homogeneous node).
+# ---------------------------------------------------------------------------
+ADVERTISED_GPU_UUIDS="${ADVERTISED_GPU_UUIDS:-GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb}"
+
+# Node-inventory labels. Custom domain prefix so they cannot be confused with,
+# or overwritten by, the nvidia.com/* labels GFD manages.
+GPU_INVENTORY_LABELS=(
+  "hierocracy.home/gpu-advertised=tesla-v100-32gb"
+  "hierocracy.home/gpu-advertised-count=1"
+  "hierocracy.home/gpu-p4-present=true"
+  "hierocracy.home/gpu-p4-count=2"
+  "hierocracy.home/gpu-total-count=3"
+  "hierocracy.home/gpu-heterogeneous=true"
+)
+
 echo "[GPU-OP] Ensuring kubectl path and KUBECONFIG..."
 if [ ! -x "${KUBECTL}" ]; then
   echo "ERROR: kubectl not found at ${KUBECTL}" >&2
@@ -87,6 +131,12 @@ label_by_pattern '^inference-[0-9]+$' 'gpu=true'
 # uses admin credentials rather than the kubelet's.
 label_by_pattern '^inference-[0-9]+$' 'node-role.kubernetes.io/inference='
 
+# Inventory labels recording what is physically on the node vs what is offered to
+# the scheduler. These document the P4s without letting GFD misdescribe the V100.
+for lbl in "${GPU_INVENTORY_LABELS[@]}"; do
+  label_by_pattern '^inference-[0-9]+$' "${lbl}"
+done
+
 if [ -z "$(${KUBECTL} get nodes -l role=storage-node -o name 2>/dev/null)" ]; then
   echo "ERROR: No node carries role=storage-node. The gpu-operator controller and" >&2
   echo "       node-feature-discovery master cannot schedule, and the Helm install" >&2
@@ -106,6 +156,28 @@ ${KUBECTL} label ns "${NAMESPACE}" \
   pod-security.kubernetes.io/audit=privileged \
   pod-security.kubernetes.io/warn=privileged \
   --overwrite
+
+# ---------------------------------------------------------------------------
+# RuntimeClass 'nvidia'.
+#
+# The values below set devicePlugin.runtimeClassName=nvidia, and a pod naming a
+# RuntimeClass that does not exist is rejected outright. Normally the operator
+# creates this object as part of toolkit installation — but toolkit.enabled=false
+# here, because on Talos the container runtime comes from the
+# nvidia-container-toolkit system extension instead. Nothing else creates it, so
+# it is created explicitly.
+#
+# The 'nvidia' handler is registered in containerd by that extension.
+# post-inference-talos.yaml additionally makes it the node's default runtime.
+# ---------------------------------------------------------------------------
+echo "[GPU-OP] Ensuring RuntimeClass 'nvidia' exists..."
+${KUBECTL} apply -f - <<EOF
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia
+EOF
 
 echo "[GPU-OP] Applying Talos-specific ConfigMap for NVIDIA Device Plugin..."
 ${KUBECTL} apply -n "${NAMESPACE}" -f - <<EOF
@@ -268,14 +340,27 @@ devicePlugin:
       value: "false"
     - name: DEVICE_LIST_STRATEGY
       value: "envvar"
+    # Restricts which GPUs this container can see. The plugin enumerates via NVML
+    # and advertises exactly what it sees, so limiting it here is what makes
+    # nvidia.com/gpu report only the V100. See the inventory block at the top.
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "${ADVERTISED_GPU_UUIDS}"
 gfd:
   enabled: true
   nodeSelector:
     gpu: "true"
+  # Restricted to the same device set as the device plugin. If GFD saw all three
+  # it would publish nvidia.com/gpu.count=3 against an allocatable of 1, and would
+  # derive .product/.memory/.compute.* from one device on a mixed node.
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "${ADVERTISED_GPU_UUIDS}"
 dcgmExporter:
   enabled: true
   nodeSelector:
     gpu: "true"
+  # Deliberately NOT restricted. The P4s are unschedulable, not unmonitored —
+  # temperature, power and utilization for all three GPUs still reach Grafana.
 EOF
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" nvidia/gpu-operator \

@@ -51,6 +51,11 @@ wait_for_ready() {
 
 detect_gpu_count() {
   local node=$1
+  # NOTE: this is the ADVERTISED (schedulable) GPU count, not the physical one.
+  # inference-0 holds 3 GPUs but only the V100 is offered to the scheduler, so
+  # allocatable — and therefore gpu-count — is 1. The physical inventory is
+  # recorded separately in the hierocracy.home/gpu-* labels set by
+  # 52-install-gpu-operator.sh. See the inventory block at the top of that script.
   # Prefer Kubernetes allocatable value from NVIDIA device plugin if present
   local cnt
   cnt=$(${KUBECTL} get node "$node" -o jsonpath="{.status.allocatable['nvidia.com/gpu']}" 2>/dev/null || true)
@@ -90,7 +95,23 @@ for n in ${nodes}; do
   label_node "$n" "$c"
 done
 
-echo "[GPU LABEL] Summary:"
-${KUBECTL} get nodes -L gpu,gpu-count | (grep inference- || true)
+echo "[GPU LABEL] Summary (gpu-count = ADVERTISED/schedulable, not physical):"
+${KUBECTL} get nodes -L gpu,gpu-count | (grep -E 'NAME|inference-' || true)
+
+echo
+echo "[GPU LABEL] Physical GPU inventory (hierocracy.home/gpu-*):"
+for n in ${nodes}; do
+  echo "  ${n}:"
+  ${KUBECTL} get node "$n" -o json 2>/dev/null | python3 -c "
+import json,sys
+labels = json.load(sys.stdin)['metadata']['labels']
+gpu = {k: v for k, v in sorted(labels.items()) if k.startswith('hierocracy.home/gpu-')}
+if gpu:
+    for k, v in gpu.items():
+        print(f'    {k.split(\"/\",1)[1]}={v}')
+else:
+    print('    (none — run 52-install-gpu-operator.sh, which applies them)')
+"
+done
 
 echo "[GPU LABEL] Done."

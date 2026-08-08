@@ -275,6 +275,71 @@ sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
   --mode=reboot
 ```
 
+### Heterogeneous GPUs — only the V100 is advertised
+
+`inference-0` holds three GPUs of two different models:
+
+| idx | UUID | Model | Memory | PCI | Advertised |
+|---|---|---|---|---|---|
+| 0 | `GPU-ce06ba79-…c6ecb` | Tesla V100 32GB (`sm_70`) | 32768 MiB | `05:00.0` | **yes** |
+| 1 | `GPU-6a3e90b5-…08c4fa` | Tesla P4 (`sm_61`) | 7680 MiB | `81:00.0` | no |
+| 2 | `GPU-d5cfa048-…7dfbb5` | Tesla P4 (`sm_61`) | 7680 MiB | `82:00.0` | no |
+
+**Why not all three.** GPU Feature Discovery models a node as having one kind of
+GPU: it publishes a single `nvidia.com/gpu.product`, `.memory` and
+`.compute.major/minor` derived from one device and applies them node-wide. With a
+mixed node those labels are wrong for two of the three GPUs — the node would
+advertise "Tesla V100 / 32GB / sm_70" three times over, and a pod scheduled on
+those labels could land on a P4 and fail on either memory or CUDA arch.
+
+So `nvidia.com/gpu` reports **1**, and it is genuinely the V100.
+
+**How.** `52-install-gpu-operator.sh` sets `NVIDIA_VISIBLE_DEVICES` to the V100
+UUID on both the device plugin and GFD. The plugin enumerates through NVML and
+advertises what it can see, so restricting its view is what caps the count.
+Override with `ADVERTISED_GPU_UUIDS`; set it to `all` on a homogeneous node.
+
+`dcgmExporter` is deliberately **not** restricted — the P4s are unschedulable,
+not unmonitored, so temperature, power and utilization for all three still reach
+Grafana.
+
+**The P4s are still there.** Driver-managed, `/dev/nvidia1` and `/dev/nvidia2`,
+just not offered to the scheduler. They are recorded on the node as:
+
+```text
+hierocracy.home/gpu-advertised=tesla-v100-32gb
+hierocracy.home/gpu-advertised-count=1
+hierocracy.home/gpu-p4-present=true
+hierocracy.home/gpu-p4-count=2
+hierocracy.home/gpu-total-count=3
+hierocracy.home/gpu-heterogeneous=true
+```
+
+The custom domain prefix keeps them clear of the `nvidia.com/*` namespace GFD
+owns. To use a P4 deliberately, bypass the device plugin: schedule with
+`nodeSelector: gpu=true` and set `NVIDIA_VISIBLE_DEVICES` to that P4's UUID
+directly, without requesting an `nvidia.com/gpu` resource.
+
+Re-derive the UUIDs after a hardware change (`nvidia-smi` cannot be run directly
+on Talos, so this goes through a throwaway pod):
+
+```bash
+/home/k8s/kube/kubectl run gpu-probe --restart=Never --rm -i \
+  --image=hierophant.hierocracy.home:5000/nvcr.io/nvidia/k8s-device-plugin:v0.18.1 \
+  --overrides='{"spec":{"nodeName":"inference-0"}}' \
+  --env=NVIDIA_VISIBLE_DEVICES=all \
+  --env=NVIDIA_DRIVER_CAPABILITIES=utility \
+  -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
+```
+
+### RuntimeClass `nvidia`
+
+`toolkit.enabled=false` on Talos (the runtime comes from the
+`nvidia-container-toolkit` system extension), which means the GPU operator never
+creates the `nvidia` RuntimeClass it normally would. Since the values set
+`devicePlugin.runtimeClassName: nvidia`, and a pod naming a missing RuntimeClass
+is rejected outright, `52-install-gpu-operator.sh` creates it explicitly.
+
 ### Node `role` labels
 
 `52-install-gpu-operator.sh` pins the operator controller and the

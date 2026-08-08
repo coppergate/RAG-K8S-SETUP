@@ -53,3 +53,17 @@ machine:
     # node-feature-discovery worker.
     gpu: "true"
     role: inference-node
+    # GPU inventory. This node is heterogeneous: 1x Tesla V100 32GB (sm_70) and
+    # 2x Tesla P4 8GB (sm_61). Only the V100 is advertised as nvidia.com/gpu,
+    # because GFD describes a node with a single product/memory/compute triple
+    # and would otherwise label all three as V100s.
+    #
+    # These use a custom domain prefix so they cannot collide with the
+    # nvidia.com/* labels GFD owns. The P4s are present and driver-managed —
+    # just not offered to the scheduler.
+    hierocracy.home/gpu-advertised: "tesla-v100-32gb"
+    hierocracy.home/gpu-advertised-count: "1"
+    hierocracy.home/gpu-p4-present: "true"
+    hierocracy.home/gpu-p4-count: "2"
+    hierocracy.home/gpu-total-count: "3"
+    hierocracy.home/gpu-heterogeneous: "true"
