@@ -60,8 +60,28 @@ bash ./cluster-shutdown.sh
     3.  Quiesces Ceph cluster (sets maintenance flags like `noout`).
     4.  Drains all Kubernetes nodes (control-plane and worker/inference) while storage is still available.
     5.  Scales down Rook-Ceph components (mgr -> others -> osd -> mon).
-    6.  Shuts down all cluster VMs via `virsh`.
+    6.  Shuts down the cluster VMs **hosted on hierophant**, discovered from
+        `virsh list --all` (v2.4.0+ — see note below).
     7.  Saves the original replica counts to `/home/k8s/kube/cluster-replicas.state`.
+
+> **The external GPU node is NOT powered off.** `inference-0` is a physical
+> machine, not a libvirt domain, so this script drains it but cannot stop it —
+> it keeps running after the script finishes and through the host reboot. The
+> script prints it explicitly under "these Kubernetes nodes are NOT libvirt
+> domains on hierophant". To stop it as well:
+> ```bash
+> /home/k8s/talos/talosctl --talosconfig /home/k8s/talos/config/talosconfig \
+>   --nodes 192.168.5.31 --endpoints 192.168.5.10 shutdown
+> ```
+
+> **v2.4.0 — do not reintroduce a hardcoded VM list.** The list was previously
+> fixed in the script and had drifted: `worker-3` was absent (so it survived the
+> shutdown and was killed by the host reboot) and `inference-0`/`inference-1`
+> were listed as VMs when `inference-0` had become external hardware. Both
+> failures were silent, because the completion check used the same stale list and
+> reported success. The script now discovers domains from libvirt, cross-checks
+> against `kubectl get nodes`, re-verifies before claiming success, and **exits
+> non-zero with "DO NOT REBOOT THE HOST"** if anything is still running.
 
 #### Rebooting
 Once the script confirms all VMs have shut down, you can safely reboot the host.
