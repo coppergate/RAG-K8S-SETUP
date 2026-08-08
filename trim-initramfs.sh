@@ -99,6 +99,21 @@ modules_in() {
 
 size_of() { du -m "$1" 2>/dev/null | cut -f1; }
 
+# Count matches on stdin. Use this instead of `producer | grep -q PATTERN`.
+#
+# Under `set -o pipefail`, `grep -q` is a trap: it exits the moment it matches,
+# the upstream producer is killed by SIGPIPE, and pipefail reports the PIPELINE
+# as failed even though the match succeeded. On 2026-08-08 that inverted the
+# `lsinitrd | grep -q sbin/lvm` check into a false "lvm binary missing" verdict,
+# which rolled back a trimmed initramfs that was actually correct. The same
+# pattern silently threatened the LUKS probe, where a false negative would have
+# let the script strip i18n from a machine that needs a keymap at the passphrase
+# prompt.
+#
+# `grep -c` consumes all of stdin, so there is no early exit and no SIGPIPE.
+# `|| true` absorbs grep's exit-1-on-zero-matches; the count is still printed.
+count_matches() { grep -cE "$1" || true; }
+
 # ==============================================================================
 # ANALYZE
 # ==============================================================================
@@ -157,7 +172,7 @@ do_analyze() {
     echo "Boot-critical facts for this host:"
     echo "    root  : $(findmnt -no SOURCE,FSTYPE / 2>/dev/null)"
     echo "    /boot : $(findmnt -no SOURCE,FSTYPE /boot 2>/dev/null)"
-    if lsblk -no TYPE 2>/dev/null | grep -q crypt; then
+    if [ "$(lsblk -no TYPE 2>/dev/null | count_matches 'crypt')" -gt 0 ]; then
         echo "    LUKS  : PRESENT — keep 'i18n' (you need a keyboard for the passphrase)"
     else
         echo "    LUKS  : none — dropping 'i18n' is safe"
@@ -191,7 +206,7 @@ do_apply() {
     fi
 
     # LUKS + no i18n = unenterable passphrase prompt.
-    if lsblk -no TYPE 2>/dev/null | grep -q crypt; then
+    if [ "$(lsblk -no TYPE 2>/dev/null | count_matches 'crypt')" -gt 0 ]; then
         if [[ " ${OMIT_DRACUT_MODULES} " == *" i18n "* ]]; then
             echo "ERROR: LUKS volumes present but OMIT_DRACUT_MODULES drops 'i18n'." >&2
             echo "  You would lose the keymap needed to type the passphrase." >&2
@@ -270,9 +285,12 @@ do_apply() {
         fi
     done
 
-    if ! lsinitrd "${IMG}" 2>/dev/null | grep -q "sbin/lvm"; then
-        echo "      FAIL: lvm binary missing — root is on LVM" >&2
-        fail=1
+    # Only assert LVM userspace if root actually sits on device-mapper.
+    if [ "$(findmnt -no SOURCE / 2>/dev/null | count_matches '/dev/mapper/')" -gt 0 ]; then
+        if [ "$(lsinitrd "${IMG}" 2>/dev/null | count_matches 'sbin/lvm')" -eq 0 ]; then
+            echo "      FAIL: lvm binary missing — root is on LVM" >&2
+            fail=1
+        fi
     fi
 
     # Any module that vanished must be one we explicitly asked to omit.
