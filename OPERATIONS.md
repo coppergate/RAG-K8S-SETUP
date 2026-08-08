@@ -100,15 +100,26 @@ cd /mnt/hegemon-share/share/code/kubernetes-setup
 bash ./cluster-startup.sh
 ```
 - **What it does**:
-    1.  Detaches GPUs from the host PCI bus.
-    2.  Starts all cluster VMs.
-    3.  Waits for the Kubernetes API and all nodes to be Ready.
+    1.  Detaches host GPUs from the PCI bus — **only for devices that actually
+        exist on this host** (v2.4.0+). On the current build the GPUs live in the
+        external node, so this is a no-op; skip explicitly with `--no-gpu`.
+    2.  Starts the cluster VMs **hosted on hierophant**, discovered from
+        `virsh list --all` (same contract as `cluster-shutdown.sh`).
+    3.  Waits for every VM-backed node to be Ready (bounded to 420s), then
+        reports any Kubernetes node this host does not own.
     4.  **Admission Controller Cleanup**: Deletes the `k8tz` `MutatingWebhookConfiguration` (if present) as a safeguard to ensure core networking (Flannel) can start without mutation deadlocks.
     5.  Uncordons all nodes.
     6.  Restores Rook-Ceph in order (mon -> osd -> others).
     7.  Unfreezes Ceph state (unsets maintenance flags).
     8.  Restores all other resources from `/home/k8s/kube/cluster-replicas.state` in the correct reverse-shutdown order (Infrastructure -> Bus -> Apps).
     9.  **Admission Controller Restoration**: Reinstalls the `k8tz` admission controller via `helm upgrade --install` once the cluster is stable.
+
+> **The external GPU node is not started either.** `inference-0` is not a libvirt
+> domain, so this script cannot power it on — it must be brought up out of band
+> (physically, IPMI, or Wake-on-LAN; no method is wired up yet). The script
+> reports its Ready state and warns if it is down. If it was left running through
+> the host reboot — the default with `cluster-shutdown.sh` v2.4.0 — it rejoins on
+> its own once the control plane returns, and step 2 uncordons it.
 
 ### 1.4 Pulsar Infrastructure & Health
 Pulsar is installed by `setup-complete.sh` (Step 1.5.8) — NOT by `setup-all.sh`.
