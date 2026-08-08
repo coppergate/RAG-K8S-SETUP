@@ -13,8 +13,17 @@ set -e
 #   3. Apply Talos configuration (calls 40-apply-inference-config.sh).
 #   4. Wait for the node to reboot, install, and rejoin.
 #   5. Wait for the node to appear in kubectl as Ready.
-#   6. Approve any pending kubelet CSRs.
-#   7. Print GPU operator install reminder.
+#   6. Apply the GPU post-boot patch (NVIDIA kernel modules + containerd
+#      runtime) and reboot; wait for the node to come back Ready.
+#   7. Approve any pending kubelet CSRs.
+#   8. Print GPU operator install reminder.
+#
+# Step 6 is not optional. The installer-gpu image ships the NVIDIA extensions,
+# but kernel modules load only at boot, so they cannot be set in the initial
+# apply-config. Skip it and 'ext-nvidia-persistenced' will register as a service
+# and hang short of 'up' — nvidia-persistenced cannot open an NVIDIA device with
+# no nvidia module loaded — which in turn stalls the GPU operator's driver
+# validator and leaves ClusterPolicy not-ready.
 #
 # Prerequisites:
 #   - inference_0_mac set in 05-MAC-addresses.sh (or export INFERENCE_MAINT_IP)
@@ -43,7 +52,7 @@ RETRY_INTERVAL=15
 # ---------------------------------------------------------------------------
 # Step 1: Verify cluster API is reachable via VIP
 # ---------------------------------------------------------------------------
-echo "[1/5] Verifying cluster API is reachable at ${CP_VIP}..."
+echo "[1/8] Verifying cluster API is reachable at ${CP_VIP}..."
 if ! sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
         health --nodes "${CP_IP_0}" --endpoints "${CP_VIP}" \
         --wait-timeout 60s 2>/dev/null; then
@@ -61,7 +70,7 @@ echo "  [✓] Cluster API reachable."
 # On the flat LAN the node boots the Talos USB and DHCPs a temporary
 # 192.168.0.x lease from the router. Resolve it by MAC (ARP), unless the
 # operator provided INFERENCE_MAINT_IP explicitly (e.g. read from the console).
-echo "[2/5] Determining inference node maintenance IP..."
+echo "[2/8] Determining inference node maintenance IP..."
 if [ -n "${INFERENCE_MAINT_IP}" ]; then
     echo "  Using operator-provided INFERENCE_MAINT_IP=${INFERENCE_MAINT_IP}"
 elif [ -n "${inference_0_mac}" ] && [ "${inference_0_mac}" != "00:00:00:00:00:00" ]; then
@@ -104,13 +113,13 @@ done
 # ---------------------------------------------------------------------------
 # Step 3: Apply Talos configuration
 # ---------------------------------------------------------------------------
-echo "[3/5] Applying Talos configuration to inference node..."
+echo "[3/8] Applying Talos configuration to inference node..."
 "${SETUP_ROOT}/new-setup-external-gpu/40-apply-inference-config.sh"
 
 # ---------------------------------------------------------------------------
 # Step 4: Wait for node to reboot, install, and re-appear in Talos
 # ---------------------------------------------------------------------------
-echo "[4/5] Waiting for inference node to install Talos and reboot..."
+echo "[4/8] Waiting for inference node to install Talos and reboot..."
 echo "  (This typically takes 3–8 minutes for SSD install)"
 sleep 60
 
@@ -134,7 +143,7 @@ done
 # ---------------------------------------------------------------------------
 # Step 5: Wait for node to be Ready in Kubernetes
 # ---------------------------------------------------------------------------
-echo "[5/5] Waiting for inference-0 to become Ready in Kubernetes..."
+echo "[5/8] Waiting for inference-0 to become Ready in Kubernetes..."
 for i in $(seq 1 $MAX_RETRIES); do
     STATUS=$(${KUBECTL} get node inference-0 --no-headers 2>/dev/null | awk '{print $2}' || echo "NotFound")
     echo "  [K8s node status] Attempt $i: ${STATUS}"
@@ -149,22 +158,102 @@ for i in $(seq 1 $MAX_RETRIES); do
     sleep ${RETRY_INTERVAL}
 done
 
-# Approve any pending CSRs (kubelet server certificates)
-echo "Approving pending kubelet CSRs..."
+# ---------------------------------------------------------------------------
+# Step 6: Apply the GPU post-boot patch (NVIDIA kernel modules) and reboot
+# ---------------------------------------------------------------------------
+# Kernel modules are loaded at boot, so this cannot be folded into the initial
+# apply-config in step 3 — the node has to already be running Talos-from-disk.
+# --mode=reboot writes the machine config and restarts the node in one shot.
+echo "[6/8] Applying GPU post-boot patch (NVIDIA kernel modules + containerd runtime)..."
+GPU_PATCH="${SETUP_ROOT}/new-setup-external-gpu/configs/post-inference-talos.yaml"
+if [ ! -f "${GPU_PATCH}" ]; then
+    echo "ERROR: GPU post-boot patch not found: ${GPU_PATCH}" >&2
+    exit 1
+fi
+
+if [ "${SKIP_GPU_PATCH:-false}" = "true" ]; then
+    echo "  SKIP_GPU_PATCH=true — skipping. NVIDIA modules will NOT be loaded."
+else
+    sudo -E ${TALOS_ROOT}/talosctl \
+        --talosconfig "${TALOSCONFIG}" \
+        --nodes "${INFERENCE_IP_0}" \
+        --endpoints "${CP_VIP}" \
+        patch machineconfig \
+        --patch "@${GPU_PATCH}" \
+        --mode=reboot
+
+    echo "  [✓] Patch applied — node is rebooting to load the NVIDIA modules."
+    echo "  Waiting 45s before probing for the node's return..."
+    sleep 45
+
+    wait_for_talos "${INFERENCE_IP_0}" 300
+
+    echo "  Waiting for inference-0 to be Ready again after the GPU reboot..."
+    for i in $(seq 1 $MAX_RETRIES); do
+        STATUS=$(${KUBECTL} get node inference-0 --no-headers 2>/dev/null | awk '{print $2}' || echo "NotFound")
+        echo "  [K8s node status] Attempt $i: ${STATUS}"
+        if [ "${STATUS}" = "Ready" ]; then
+            echo "  [✓] inference-0 is Ready after the GPU reboot."
+            break
+        fi
+        if [ $i -eq $MAX_RETRIES ]; then
+            echo "ERROR: inference-0 did not return to Ready after the GPU patch reboot." >&2
+            exit 1
+        fi
+        sleep ${RETRY_INTERVAL}
+    done
+
+    # Verify the modules actually loaded. If this fails, 52-install-gpu-operator.sh
+    # will stall in driver validation, so surface it here rather than 10 minutes later.
+    echo "  Verifying NVIDIA kernel modules are loaded..."
+    if sudo -E ${TALOS_ROOT}/talosctl \
+            --talosconfig "${TALOSCONFIG}" \
+            --nodes "${INFERENCE_IP_0}" \
+            --endpoints "${CP_VIP}" \
+            read /proc/modules 2>/dev/null | grep -q "^nvidia"; then
+        echo "  [✓] NVIDIA kernel modules loaded."
+    else
+        echo "  [!] WARNING: no 'nvidia' entry in /proc/modules." >&2
+        echo "      Check that machine.install.image is the installer-gpu image and" >&2
+        echo "      that the node actually rebooted:" >&2
+        echo "        talosctl --nodes ${INFERENCE_IP_0} --endpoints ${CP_VIP} services" >&2
+        echo "        talosctl --nodes ${INFERENCE_IP_0} --endpoints ${CP_VIP} dmesg | grep -i nvidia" >&2
+    fi
+
+    # ext-nvidia-persistenced is the extension service that hangs when the
+    # modules are missing — report its state explicitly.
+    echo "  Extension service state:"
+    sudo -E ${TALOS_ROOT}/talosctl \
+        --talosconfig "${TALOSCONFIG}" \
+        --nodes "${INFERENCE_IP_0}" \
+        --endpoints "${CP_VIP}" \
+        services 2>/dev/null | grep -i "nvidia" || \
+        echo "    (no nvidia extension services reported)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Approve any pending CSRs (kubelet server certificates)
+# ---------------------------------------------------------------------------
+echo "[7/8] Approving pending kubelet CSRs..."
 ${KUBECTL} get csr --no-headers 2>/dev/null | \
     grep "Pending" | \
     awk '{print $1}' | \
     xargs -r ${KUBECTL} certificate approve
 
+# ---------------------------------------------------------------------------
+# Step 8: Summary
+# ---------------------------------------------------------------------------
 echo ""
+echo "[8/8] Enrollment summary"
 echo "======================================================="
 echo " External GPU node enrollment complete!"
 echo "======================================================="
 echo " Node     : inference-0"
 echo " IP       : ${INFERENCE_IP_0}"
 echo " Network  : flat LAN (192.168.5.x) — reachable from every host and the cluster"
+echo " GPU patch: $([ "${SKIP_GPU_PATCH:-false}" = "true" ] && echo "SKIPPED (SKIP_GPU_PATCH=true)" || echo "applied + rebooted")"
 echo ""
 echo " Next steps:"
 echo "   ./52-install-gpu-operator.sh   — Install NVIDIA GPU Operator"
-echo "   ./55-label-gpu-nodes.sh        — Label inference-0 with GPU node role"
+echo "   ./55-label-gpu-nodes.sh        — Label inference-0 with gpu/gpu-count"
 echo "======================================================="

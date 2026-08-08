@@ -1,0 +1,39 @@
+# ==============================================================================
+# GPU POST-BOOT PATCH — new-setup-external-gpu
+#
+# Applied by 45-enroll-external-node.sh with --mode=reboot AFTER the inference
+# node has installed Talos and joined the cluster. It cannot be folded into
+# patch-inference-0.yaml: kernel modules are loaded at boot, so the node must
+# already be running Talos-from-disk for these to take effect.
+#
+# Without this patch the NVIDIA extensions from the installer-gpu image are
+# present but inert — 'ext-nvidia-persistenced' registers as a service and then
+# hangs short of 'up', because nvidia-persistenced cannot open an NVIDIA device
+# with no nvidia kernel module loaded. The GPU operator's driver validator then
+# loops and ClusterPolicy never goes ready.
+#
+# Variant-local copy of ../../configs/post-inference-talos.yaml (which is shared
+# with add-gpu-node/ and new-setup-single/). Kept separate so this directory is
+# self-contained and changes here cannot regress the other variants.
+# ==============================================================================
+machine:
+  kernel:
+    modules:
+      - name: nvidia
+      - name: nvidia_uvm
+      - name: nvidia_drm
+      - name: nvidia_modeset
+  sysctls:
+    # Quoted: machine.sysctls is map[string]string, and every other sysctl in
+    # machine-patches.yaml is quoted. Merges with (does not replace) those.
+    net.core.bpf_jit_harden: "1"
+  files:
+    # Distinct path from the /var/cri/conf.d/metrics.toml entry in
+    # machine-patches.yaml, so machine.files merges by path rather than colliding.
+    - op: create
+      content: |
+        [plugins]
+          [plugins."io.containerd.cri.v1.runtime"]
+            [plugins."io.containerd.cri.v1.runtime".containerd]
+              default_runtime_name = "nvidia"
+      path: /etc/cri/conf.d/20-customization.part

@@ -218,7 +218,9 @@ vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr, confirm di
 # 2. Boot GPU node from Talos USB — it gets a temporary 192.168.0.x lease from
 #    the router. 45-enroll discovers that maintenance IP by MAC (ARP).
 
-# 3. Run full enrollment (applies config; node reboots onto static 192.168.5.31)
+# 3. Run full enrollment. This applies the config (node reboots onto static
+#    192.168.5.31), then applies the GPU post-boot patch and reboots a SECOND
+#    time to load the NVIDIA kernel modules. Expect two reboots.
 ./45-enroll-external-node.sh
 #    If the MAC isn't set, pass the maintenance IP explicitly:
 #    INFERENCE_MAINT_IP=192.168.0.NN ./45-enroll-external-node.sh
@@ -227,3 +229,63 @@ vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr, confirm di
 ./52-install-gpu-operator.sh
 ./55-label-gpu-nodes.sh
 ```
+
+### The GPU post-boot patch (step 6 of enrollment)
+
+`configs/post-inference-talos.yaml` is applied by `45-enroll-external-node.sh`
+*after* the node has joined and gone Ready, with `--mode=reboot`. It sets the
+`nvidia`, `nvidia_uvm`, `nvidia_drm` and `nvidia_modeset` kernel modules, the
+`net.core.bpf_jit_harden` sysctl, and containerd's `default_runtime_name =
+"nvidia"`.
+
+It cannot be merged into `patch-inference-0.yaml`: kernel modules load at boot,
+so the node has to already be running Talos-from-disk before they can take
+effect.
+
+**Symptom if this step is skipped or fails** — `ext-nvidia-persistenced`
+registers as a service but never reaches `up`. The installer image ships the
+NVIDIA extensions, so the service exists; `nvidia-persistenced` just cannot open
+an NVIDIA device with no `nvidia` module loaded. The GPU operator's driver
+validator then loops and `ClusterPolicy` stays not-ready.
+
+Verify by hand:
+
+```bash
+source ./config-env.sh
+source ./config-endpoints.sh
+
+# Expect nvidia, nvidia_uvm, nvidia_drm, nvidia_modeset
+sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+  --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
+  read /proc/modules | grep nvidia
+
+# Expect ext-nvidia-persistenced in a Running/OK state
+sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+  --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
+  services
+```
+
+To re-apply on an already-enrolled node without re-running enrollment:
+
+```bash
+sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+  --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
+  patch machineconfig \
+  --patch "@configs/post-inference-talos.yaml" \
+  --mode=reboot
+```
+
+### Node `role` labels
+
+`52-install-gpu-operator.sh` pins the operator controller and the
+node-feature-discovery master to `role=storage-node`, and the NFD worker to
+`role=inference-node`. These come from Talos `machine.nodeLabels`:
+
+| Label | Set in |
+|---|---|
+| `role=storage-node` | `configs/patch-worker-0..3.yaml` |
+| `role=inference-node` | `configs/patch-inference-0.yaml` |
+
+`52-install-gpu-operator.sh` also applies them with `kubectl` as a preflight, so
+clusters built before those patches existed still work. Without the labels the
+Helm install hangs on Pending pods until it times out.

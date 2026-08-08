@@ -34,3 +34,7 @@ machine:
   nodeLabels:
     node-role.kubernetes.io/inference: ""
     gpu: "true"
+    # Selected by 52-install-gpu-operator.sh for the node-feature-discovery
+    # worker. Set here (declaratively, via Talos) rather than with kubectl so it
+    # survives reboots and re-enrollment.
+    role: inference-node

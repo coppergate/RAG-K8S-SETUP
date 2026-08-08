@@ -10,3 +10,9 @@ machine:
       routes:
       - network: 0.0.0.0/0
         gateway: 192.168.0.1
+  nodeLabels:
+    # Selected by 52-install-gpu-operator.sh for the gpu-operator controller and
+    # the node-feature-discovery master, both of which must run OFF the GPU node.
+    # Also the project-wide marker for non-inference work (see guidelines.md).
+    # Set declaratively via Talos so it survives reboots.
+    role: storage-node

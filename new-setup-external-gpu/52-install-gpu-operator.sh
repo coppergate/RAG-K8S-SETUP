@@ -44,6 +44,44 @@ if ! ${KUBECTL} version >/dev/null 2>&1; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Preflight: ensure the 'role' node labels this chart selects on actually exist.
+#
+# The values below pin the operator controller and the node-feature-discovery
+# master to role=storage-node, and the NFD worker to role=inference-node. If no
+# node carries those labels every one of those pods stays Pending and the
+# 'helm upgrade --install --wait' below burns TIMEOUT_SECS and then fails.
+#
+# On a fresh build these come from Talos machine.nodeLabels (configs/patch-
+# worker-*.yaml and configs/patch-inference-0.yaml). This block is the safety
+# net for clusters built before those patches existed, and is idempotent.
+# ---------------------------------------------------------------------------
+echo "[GPU-OP] Ensuring 'role' node labels exist (required by the chart's nodeSelectors)..."
+label_by_pattern() {
+  local pattern=$1
+  local label=$2
+  local nodes
+  nodes="$(${KUBECTL} get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+             | grep -E "${pattern}" || true)"
+  if [ -z "${nodes}" ]; then
+    echo "  WARN: no nodes matching '${pattern}' — nothing to label ${label}." >&2
+    return 0
+  fi
+  for n in ${nodes}; do
+    echo "  - ${n} -> ${label}"
+    ${KUBECTL} label node "${n}" "${label}" --overwrite >/dev/null
+  done
+}
+label_by_pattern '^worker-[0-9]+$'    'role=storage-node'
+label_by_pattern '^inference-[0-9]+$' 'role=inference-node'
+
+if [ -z "$(${KUBECTL} get nodes -l role=storage-node -o name 2>/dev/null)" ]; then
+  echo "ERROR: No node carries role=storage-node. The gpu-operator controller and" >&2
+  echo "       node-feature-discovery master cannot schedule, and the Helm install" >&2
+  echo "       below would hang for ${TIMEOUT_SECS}s and fail." >&2
+  exit 1
+fi
+
 echo "[GPU-OP] Ensuring namespace '${NAMESPACE}' exists and has Pod Security set to privileged..."
 # Create namespace if it doesn't exist
 if ! ${KUBECTL} get ns "${NAMESPACE}" >/dev/null 2>&1; then
@@ -197,7 +235,9 @@ operator:
 node-feature-discovery:
   # NFD workers run on EVERY node by default, including all control plane nodes.
   # Restrict to inference nodes only — GPUs will only ever be on inference nodes.
-  # 'role=inference-node' is set by setup-node-labels.sh before this script runs.
+  # 'role=inference-node' comes from Talos machine.nodeLabels in
+  # configs/patch-inference-0.yaml, with the preflight block above as a fallback
+  # for clusters built before that patch existed.
   worker:
     nodeSelector:
       role: inference-node
