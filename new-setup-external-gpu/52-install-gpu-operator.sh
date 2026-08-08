@@ -227,8 +227,17 @@ data:
         name: nvidia.com/gpu
       - pattern: "${P4_PRODUCT_PATTERN}"
         name: ${P4_RESOURCE_NAME}
-    sharing:
-      timeSlicing: {}
+    # NOTE: no 'sharing:' block. An empty 'sharing.timeSlicing: {}' fails config
+    # parsing with "no resources specified" and the plugin refuses to start,
+    # leaving nvidia.com/gpu at 0. It sat here harmlessly for as long as the
+    # ConfigMap was being ignored; it only became fatal once devicePlugin.config
+    # .default made the plugin actually read the file. Re-add only with real
+    # content, e.g.:
+    #   sharing:
+    #     timeSlicing:
+    #       resources:
+    #       - name: nvidia.com/gpu
+    #         replicas: 2
 EOF
 
 # NOTE: The 'nvidia-talos-validation-fix' DaemonSet is REQUIRED on Talos Linux.
@@ -345,6 +354,18 @@ driver:
   enabled: false
 toolkit:
   enabled: false
+mig:
+  # MUST be 'none' for the named resources in nvidia-device-plugin-config to work.
+  #
+  # The chart default is 'single', which asserts the node holds one uniform kind of
+  # device. Under that assertion the plugin discards resources.gpus and collapses
+  # everything into one nvidia.com/gpu pool, and GFD logs "Multiple device types
+  # detected" before picking a single product to describe the whole node.
+  #
+  # This surfaces on the containers as MIG_STRATEGY, and the plugin resolves env
+  # ABOVE its config file — so setting migStrategy in the ConfigMap cannot fix it.
+  # Neither the V100 nor the P4 supports MIG, so 'none' is also just correct.
+  strategy: none
 operator:
   defaultRuntime: nvidia
   # Run the operator controller on a worker node, not control plane.
