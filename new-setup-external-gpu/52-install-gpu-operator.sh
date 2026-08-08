@@ -72,22 +72,22 @@ fi
 #     --env=NVIDIA_VISIBLE_DEVICES=all --env=NVIDIA_DRIVER_CAPABILITIES=utility \
 #     -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
 # ---------------------------------------------------------------------------
-V100_PRODUCT_PATTERN="${V100_PRODUCT_PATTERN:-Tesla PG500-216}"
-P4_PRODUCT_PATTERN="${P4_PRODUCT_PATTERN:-Tesla P4}"
-P4_RESOURCE_NAME="${P4_RESOURCE_NAME:-nvidia.com/tesla-p4}"
-
 # Node-inventory labels. Custom domain prefix so they cannot be confused with,
-# or overwritten by, the nvidia.com/* labels GFD manages. GFD cannot describe a
-# mixed node coherently — it publishes one product/memory/compute triple for the
-# whole node — so these carry the truth instead.
+# or overwritten by, the nvidia.com/* labels GFD manages.
+#
+# gpu-pool-mixed is the important one. With mig.strategy=none GFD now describes
+# the V100 accurately (product=Tesla-PG500-216, memory=32768, compute 7.0) — but
+# the nvidia.com/gpu pool still contains all THREE devices, so two thirds of it
+# does not match those labels. A pod that selects on nvidia.com/gpu.memory=32768
+# can still be handed a P4. Until the P4s are hidden from the driver (see
+# EXTERNAL-NODE-SETUP.md), treat nvidia.com/gpu on this node as untyped.
 GPU_INVENTORY_LABELS=(
-  "hierocracy.home/gpu-advertised=tesla-v100-32gb"
-  "hierocracy.home/gpu-advertised-count=1"
-  "hierocracy.home/gpu-p4-present=true"
-  "hierocracy.home/gpu-p4-count=2"
-  "hierocracy.home/gpu-p4-resource=nvidia.com_tesla-p4"
   "hierocracy.home/gpu-total-count=3"
+  "hierocracy.home/gpu-v100-count=1"
+  "hierocracy.home/gpu-p4-count=2"
   "hierocracy.home/gpu-heterogeneous=true"
+  "hierocracy.home/gpu-pool-mixed=true"
+  "hierocracy.home/gpu-labels-describe=tesla-v100-32gb"
 )
 
 echo "[GPU-OP] Ensuring kubectl path and KUBECONFIG..."
@@ -220,19 +220,21 @@ data:
       # on this node and pick one product to describe all three GPUs.
       migStrategy: none
       deviceDiscoveryStrategy: nvml
-    resources:
-      # First match wins. Patterns are globs over the NVML product name.
-      gpus:
-      - pattern: "${V100_PRODUCT_PATTERN}"
-        name: nvidia.com/gpu
-      - pattern: "${P4_PRODUCT_PATTERN}"
-        name: ${P4_RESOURCE_NAME}
-    # NOTE: no 'sharing:' block. An empty 'sharing.timeSlicing: {}' fails config
-    # parsing with "no resources specified" and the plugin refuses to start,
-    # leaving nvidia.com/gpu at 0. It sat here harmlessly for as long as the
-    # ConfigMap was being ignored; it only became fatal once devicePlugin.config
-    # .default made the plugin actually read the file. Re-add only with real
-    # content, e.g.:
+    # DO NOT add a 'resources:' block here to split the P4s onto their own
+    # resource name. It was tried; the plugin refuses it outright:
+    #
+    #   W config.go:88] Customizing the 'resources' field is not yet supported
+    #                   in the config. Ignoring...
+    #   I main.go:355]  Updating config with default resource matching patterns.
+    #
+    # Per-product resource naming is simply unimplemented in plugin v0.19.3, so
+    # every GPU on the node lands in one nvidia.com/gpu pool no matter what.
+    # Restricting the pool has to happen below the plugin — see the
+    # "Heterogeneous GPUs" section of EXTERNAL-NODE-SETUP.md.
+    #
+    # DO NOT add an empty 'sharing: timeSlicing: {}' block either — it fails
+    # config parsing with "no resources specified" and the plugin will not start,
+    # leaving nvidia.com/gpu at 0. Re-add only with real content, e.g.:
     #   sharing:
     #     timeSlicing:
     #       resources:

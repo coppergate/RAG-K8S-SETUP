@@ -275,104 +275,113 @@ sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
   --mode=reboot
 ```
 
-### Heterogeneous GPUs — only the V100 is advertised
+### Heterogeneous GPUs — a mixed, untyped pool
 
 `inference-0` holds three GPUs of two different models:
 
-| idx | UUID | Model | Memory | PCI | Advertised |
-|---|---|---|---|---|---|
-| 0 | `GPU-ce06ba79-…c6ecb` | Tesla V100 32GB (`sm_70`) | 32768 MiB | `05:00.0` | **yes** |
-| 1 | `GPU-6a3e90b5-…08c4fa` | Tesla P4 (`sm_61`) | 7680 MiB | `81:00.0` | no |
-| 2 | `GPU-d5cfa048-…7dfbb5` | Tesla P4 (`sm_61`) | 7680 MiB | `82:00.0` | no |
+| idx | UUID | Model | Memory | Compute | PCI | PCI ID |
+|---|---|---|---|---|---|---|
+| 0 | `GPU-ce06ba79-…c6ecb` | Tesla V100 32GB | 32768 MiB | `sm_70` | `05:00.0` | — |
+| 1 | `GPU-6a3e90b5-…08c4fa` | Tesla P4 | 7680 MiB | `sm_61` | `81:00.0` | `10de:1bb3` |
+| 2 | `GPU-d5cfa048-…7dfbb5` | Tesla P4 | 7680 MiB | `sm_61` | `82:00.0` | `10de:1bb3` |
 
-**Why not all three.** GPU Feature Discovery models a node as having one kind of
-GPU: it publishes a single `nvidia.com/gpu.product`, `.memory` and
-`.compute.major/minor` derived from one device and applies them node-wide. With a
-mixed node those labels are wrong for two of the three GPUs — the node would
-advertise "Tesla V100 / 32GB / sm_70" three times over, and a pod scheduled on
-those labels could land on a P4 and fail on either memory or CUDA arch.
+> ⚠ **`nvidia.com/gpu` on this node is 3, and it is NOT typed.** The GFD labels
+> describe the V100 only. A pod that selects on `nvidia.com/gpu.memory=32768` or
+> `compute.major=7` can still be handed a P4 with 8 GB and `sm_61`, and will fail
+> on memory or CUDA arch. Until the P4s are hidden from the driver, treat
+> `nvidia.com/gpu` here as "some NVIDIA GPU" and pin critical work explicitly.
 
-So `nvidia.com/gpu` reports **1**, and it is genuinely the V100.
+**Advertising only the V100 is not achievable through the device plugin.** Two
+approaches were tried against the live cluster and both failed:
 
-**How — named resources, matched on product name.** The device plugin's
-`resources.gpus` list maps a product-name glob to a resource name, first match
-wins:
+1. **`NVIDIA_VISIBLE_DEVICES` pinned to the V100 UUID** on the device plugin and
+   GFD. No effect — the operator runs both as **privileged** containers, so
+   `/dev/nvidia*` is mounted wholesale and NVML enumerates everything regardless.
+   That variable only governs what the runtime hook injects into an *unprivileged*
+   container. It made things worse: GFD collapsed the node to
+   `gpu.product=Tesla-P4, count=2`, hiding the V100.
 
-```yaml
-resources:
-  gpus:
-  - pattern: "Tesla PG500-216"
-    name: nvidia.com/gpu
-  - pattern: "Tesla P4"
-    name: nvidia.com/tesla-p4
-```
+2. **Named resources** (`resources.gpus` mapping product globs to distinct
+   resource names). Rejected by the plugin outright:
 
-Giving `nvidia.com/gpu: 1` (the V100) and `nvidia.com/tesla-p4: 2`. Patterns match
-the NVML product name (`nvidia-smi --query-gpu=name`), **not** GFD's
-dash-sanitized label form — `Tesla P4`, not `Tesla-P4`. Override via
-`V100_PRODUCT_PATTERN`, `P4_PRODUCT_PATTERN` and `P4_RESOURCE_NAME`.
+   ```text
+   W config.go:88] Customizing the 'resources' field is not yet supported
+                   in the config. Ignoring...
+   ```
 
-> ⚠ **`NVIDIA_VISIBLE_DEVICES` does not work for this.** The operator runs the
-> device plugin and GFD as **privileged** containers, so `/dev/nvidia*` is mounted
-> wholesale and NVML enumerates every GPU regardless — that variable only governs
-> what the runtime hook injects into an *unprivileged* container. It was tried:
-> GFD still saw all three and collapsed the node to `gpu.product=Tesla-P4`,
-> `gpu.count=2`, hiding the V100 entirely. Don't reintroduce it.
+   The field parses but is unimplemented in plugin **v0.19.3**. Every GPU lands in
+   one `nvidia.com/gpu` pool.
 
-Two further requirements, both easy to miss:
-
-- `devicePlugin.config.default: config.yaml` must be set in the Helm values, or
-  the operator ignores the ConfigMap wholesale and the plugin runs on chart
-  defaults. This was the original failure.
-- The ConfigMap must **not** set `nvidiaDriverRoot`/`nvidiaDevRoot`. The plugin's
-  default `/run/nvidia/driver` is the layout `nvidia-talos-validation-fix` builds;
-  overriding it to `/` points at a path that doesn't exist on Talos.
-
-`dcgmExporter` is deliberately unrestricted — the P4s are unschedulable under
-`nvidia.com/gpu` but still driver-managed, so temperature, power and utilization
-for all three still reach Grafana.
-
-**The P4s are still there.** Driver-managed, `/dev/nvidia1` and `/dev/nvidia2`,
-addressable via `nvidia.com/tesla-p4`. They are recorded on the node as:
+**What `mig.strategy=none` did fix.** The chart default `single` asserts the node
+is uniform; under it GFD logged `Multiple device types detected` and described all
+three GPUs as Tesla P4 / 7680 MiB / `sm_61`. With `none`, GFD now reports the V100
+truthfully:
 
 ```text
-hierocracy.home/gpu-advertised=tesla-v100-32gb
-hierocracy.home/gpu-advertised-count=1
-hierocracy.home/gpu-p4-present=true
-hierocracy.home/gpu-p4-count=2
-hierocracy.home/gpu-total-count=3
-hierocracy.home/gpu-heterogeneous=true
+nvidia.com/gpu.product=Tesla-PG500-216   memory=32768
+nvidia.com/gpu.compute.major=7 minor=0   family=volta   count=1
 ```
 
-The custom domain prefix keeps them clear of the `nvidia.com/*` namespace GFD
-owns. To use a P4 deliberately, request its own resource — no UUID juggling:
+Note this surfaces on the containers as `MIG_STRATEGY`, and the plugin resolves
+**env above its config file** — setting `migStrategy` in the ConfigMap has no
+effect. It must be set as the Helm value `mig.strategy`.
+
+**Inventory labels.** Because the pool is mixed and GFD cannot say so, the truth
+is carried separately:
+
+```text
+hierocracy.home/gpu-total-count=3
+hierocracy.home/gpu-v100-count=1
+hierocracy.home/gpu-p4-count=2
+hierocracy.home/gpu-heterogeneous=true
+hierocracy.home/gpu-pool-mixed=true            # nvidia.com/gpu is NOT uniform
+hierocracy.home/gpu-labels-describe=tesla-v100-32gb
+```
+
+#### If you do want a V100-only pool
+
+The restriction has to happen below the device plugin, by keeping the NVIDIA
+driver from claiming the P4s at all. Both P4s share PCI ID `10de:1bb3`, which the
+V100 does not, so they can be targeted as a pair via a Talos kernel argument:
 
 ```yaml
-resources:
-  limits:
-    nvidia.com/tesla-p4: 1
+machine:
+  install:
+    extraKernelArgs:
+      - vfio-pci.ids=10de:1bb3
 ```
 
-Note that GFD's node-level `nvidia.com/gpu.product`, `.memory` and `.compute.*`
-labels still describe only one of the two models — GFD has no way to express a
-mixed node. Schedule on the resource names and the `hierocracy.home/gpu-*` labels
-above; do not trust `nvidia.com/gpu.product` on this node.
+Applied with `--mode=reboot`, NVML would then see only the V100 and
+`nvidia.com/gpu` would become 1, with the GFD labels already correct.
+
+> **Untested here, and it is a real trade-off:** the P4s become unavailable to
+> CUDA entirely — bound to `vfio-pci` and usable only for passthrough. Verify on
+> a maintenance window, not in place. The alternative is to leave the pool mixed
+> and schedule defensively using the labels above.
 
 ### GPU smoke test
 
 `nvidia/cuda:12.3.1-base-ubuntu22.04` is seeded in the bootstrap registry for
-this. Confirm each pool binds the hardware you expect:
+this. Requesting `nvidia.com/gpu: 1` gives you **whichever** of the three the
+plugin hands out — run it a few times and you will see both models:
 
 ```bash
-# Should report the V100 (32768 MiB)
-/home/k8s/kube/kubectl run gpu-test-v100 --restart=Never --rm -i \
+/home/k8s/kube/kubectl run gpu-test --restart=Never --rm -i \
   --image=hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04 \
   --overrides='{"spec":{"containers":[{"name":"c","image":"hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04","command":["nvidia-smi","--query-gpu=name,memory.total","--format=csv"],"resources":{"limits":{"nvidia.com/gpu":1}}}]}}'
+```
 
-# Should report a Tesla P4 (7680 MiB)
-/home/k8s/kube/kubectl run gpu-test-p4 --restart=Never --rm -i \
+To pin a *specific* card, skip the resource request and name the UUID directly —
+this bypasses the device plugin, so it does no accounting and can double-book a
+GPU another pod holds. Use it for diagnostics, not production scheduling:
+
+```bash
+/home/k8s/kube/kubectl run gpu-test-v100 --restart=Never --rm -i \
   --image=hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04 \
-  --overrides='{"spec":{"containers":[{"name":"c","image":"hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04","command":["nvidia-smi","--query-gpu=name,memory.total","--format=csv"],"resources":{"limits":{"nvidia.com/tesla-p4":1}}}]}}'
+  --overrides='{"spec":{"nodeName":"inference-0"}}' \
+  --env=NVIDIA_VISIBLE_DEVICES=GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb \
+  --env=NVIDIA_DRIVER_CAPABILITIES=utility \
+  -- nvidia-smi --query-gpu=name,memory.total --format=csv
 ```
 
 Re-derive the UUIDs after a hardware change (`nvidia-smi` cannot be run directly

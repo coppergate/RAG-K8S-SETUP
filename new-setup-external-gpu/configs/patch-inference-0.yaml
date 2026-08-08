@@ -54,16 +54,16 @@ machine:
     gpu: "true"
     role: inference-node
     # GPU inventory. This node is heterogeneous: 1x Tesla V100 32GB (sm_70) and
-    # 2x Tesla P4 8GB (sm_61). Only the V100 is advertised as nvidia.com/gpu,
-    # because GFD describes a node with a single product/memory/compute triple
-    # and would otherwise label all three as V100s.
+    # 2x Tesla P4 8GB (sm_61), and ALL THREE sit in one nvidia.com/gpu pool —
+    # per-product resource naming is unimplemented in device plugin v0.19.3.
     #
-    # These use a custom domain prefix so they cannot collide with the
-    # nvidia.com/* labels GFD owns. The P4s are present and driver-managed —
-    # just not offered to the scheduler.
-    hierocracy.home/gpu-advertised: "tesla-v100-32gb"
-    hierocracy.home/gpu-advertised-count: "1"
-    hierocracy.home/gpu-p4-present: "true"
-    hierocracy.home/gpu-p4-count: "2"
+    # gpu-pool-mixed is the one that matters: GFD's nvidia.com/gpu.* labels
+    # describe the V100 only, so selecting on them can still land a pod on a P4.
+    # Custom domain prefix so these cannot collide with the labels GFD owns.
+    # See the "Heterogeneous GPUs" section of EXTERNAL-NODE-SETUP.md.
     hierocracy.home/gpu-total-count: "3"
+    hierocracy.home/gpu-v100-count: "1"
+    hierocracy.home/gpu-p4-count: "2"
     hierocracy.home/gpu-heterogeneous: "true"
+    hierocracy.home/gpu-pool-mixed: "true"
+    hierocracy.home/gpu-labels-describe: "tesla-v100-32gb"
