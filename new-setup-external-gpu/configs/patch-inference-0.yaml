@@ -67,3 +67,10 @@ machine:
     hierocracy.home/gpu-heterogeneous: "true"
     hierocracy.home/gpu-pool-mixed: "true"
     hierocracy.home/gpu-labels-describe: "tesla-v100-32gb"
+    # Per-card UUIDs. Workloads pin a specific GPU by setting
+    # NVIDIA_VISIBLE_DEVICES to one of these (see EXTERNAL-NODE-SETUP.md).
+    # UUIDs are stable across reboots but NOT across a card being reseated or
+    # replaced — re-derive with the gpu-probe recipe if the hardware changes.
+    hierocracy.home/gpu-v100-uuid: "GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb"
+    hierocracy.home/gpu-p4-0-uuid: "GPU-6a3e90b5-542c-4189-8385-62224608c4fa"
+    hierocracy.home/gpu-p4-1-uuid: "GPU-d5cfa048-3ff2-dcec-f9bc-d0c7797dfbb5"

@@ -359,6 +359,90 @@ Applied with `--mode=reboot`, NVML would then see only the V100 and
 > a maintenance window, not in place. The alternative is to leave the pool mixed
 > and schedule defensively using the labels above.
 
+### Targeting a specific GPU (the model this node uses)
+
+Workloads on `inference-0` **pin a card by UUID** rather than requesting
+`nvidia.com/gpu`. This is verified working: an unprivileged pod that sets
+`NVIDIA_VISIBLE_DEVICES` to a UUID sees exactly that GPU and nothing else.
+
+```text
+NVIDIA_VISIBLE_DEVICES=GPU-ce06ba79…   → 0, Tesla PG500-216, 32768 MiB
+NVIDIA_VISIBLE_DEVICES=GPU-6a3e90b5…   → 0, Tesla P4,          7680 MiB
+NVIDIA_VISIBLE_DEVICES=<v100>,<p4>     → 0, Tesla PG500-216 / 1, Tesla P4
+```
+
+(The privileged-container caveat elsewhere in this document applies only to the
+GPU operator's own DaemonSets, not to your workloads.)
+
+The UUIDs are published as node labels, so manifests need not hardcode them:
+
+| Label | Card |
+|---|---|
+| `hierocracy.home/gpu-v100-uuid` | Tesla V100 32GB, `05:00.0` |
+| `hierocracy.home/gpu-p4-0-uuid` | Tesla P4, `81:00.0` |
+| `hierocracy.home/gpu-p4-1-uuid` | Tesla P4, `82:00.0` |
+
+```bash
+/home/k8s/kube/kubectl get node inference-0 \
+  -o jsonpath='{.metadata.labels.hierocracy\.home/gpu-v100-uuid}'
+```
+
+**Pod spec:**
+
+```yaml
+spec:
+  nodeSelector:
+    gpu: "true"
+  containers:
+  - name: inference
+    image: <your-image>
+    env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb"   # V100
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: "utility,compute"
+    # deliberately NO resources.limits['nvidia.com/gpu']
+```
+
+Inside the container GPUs are renumbered `0..N-1` in the order listed, so
+`CUDA_VISIBLE_DEVICES=0` refers to the first UUID you named — not to host index 0.
+
+> ⚠ **Pinning bypasses scheduler accounting.** A pinned pod does not consume
+> `nvidia.com/gpu`, so Kubernetes does not know the card is busy. Two pods pinned
+> to the same UUID will happily co-schedule and fight over VRAM.
+>
+> Don't mix the two models. Because the plugin still advertises 3, a pod that
+> *requests* `nvidia.com/gpu: 1` can be handed a card a pinned job already holds.
+> **Nothing on this node should request `nvidia.com/gpu`.** Track assignment by
+> convention — one workload per UUID.
+>
+> To remove the hazard entirely, re-run with the device plugin off:
+>
+> ```bash
+> DEVICE_PLUGIN_ENABLED=false ./52-install-gpu-operator.sh
+> ```
+>
+> This deletes `nvidia.com/gpu` from the node. DCGM metrics, GFD labels and the
+> driver are unaffected.
+
+#### Which card for which job
+
+| | V100 32GB (`sm_70`) | Tesla P4 8GB (`sm_61`) |
+|---|---|---|
+| Tensor cores | yes — FP16 / mixed precision | **none** |
+| Suited to | training, larger models, anything FP16 | small INT8 / FP32 inference |
+| Constraint | — | 8 GB ceiling, no autocast speedup |
+
+Recent framework builds have been dropping Pascal support. Before committing a
+workload to the P4s, confirm the image actually ships `sm_61` kernels:
+
+```bash
+python -c "import torch; print(torch.cuda.get_arch_list())"
+```
+
+If `sm_61` is missing, PyTorch either JITs from PTX (slow first run) or fails.
+The V100's `sm_70` is safe across current builds.
+
 ### GPU smoke test
 
 `nvidia/cuda:12.3.1-base-ubuntu22.04` is seeded in the bootstrap registry for

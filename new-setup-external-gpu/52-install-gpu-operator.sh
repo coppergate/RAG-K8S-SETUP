@@ -72,15 +72,35 @@ fi
 #     --env=NVIDIA_VISIBLE_DEVICES=all --env=NVIDIA_DRIVER_CAPABILITIES=utility \
 #     -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
 # ---------------------------------------------------------------------------
+# GPU UUIDs, published as node labels so workloads can pin a specific card by
+# reading the label instead of hardcoding a 40-character UUID in every manifest.
+# Verified: an UNPRIVILEGED pod setting NVIDIA_VISIBLE_DEVICES to one of these
+# sees exactly that GPU and nothing else. (The operator's own DaemonSets are
+# privileged, which is why the same trick does not work on them.)
+GPU_UUID_V100="${GPU_UUID_V100:-GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb}"
+GPU_UUID_P4_0="${GPU_UUID_P4_0:-GPU-6a3e90b5-542c-4189-8385-62224608c4fa}"
+GPU_UUID_P4_1="${GPU_UUID_P4_1:-GPU-d5cfa048-3ff2-dcec-f9bc-d0c7797dfbb5}"
+
+# Whether to advertise nvidia.com/gpu at all.
+#
+# Under the pin-by-UUID model this node uses, nothing should REQUEST
+# nvidia.com/gpu — pinned pods bypass the plugin entirely, so the scheduler has no
+# idea the card is busy. A pod that does request it can be handed a GPU a pinned
+# job already holds, and they will fight over VRAM.
+#
+# Left enabled by default: it is inert as long as no manifest asks for the
+# resource, and it keeps GFD's node labels current. Set to false to remove the
+# resource from the node outright and eliminate the footgun; DCGM metrics and the
+# driver are unaffected either way.
+DEVICE_PLUGIN_ENABLED="${DEVICE_PLUGIN_ENABLED:-true}"
+
 # Node-inventory labels. Custom domain prefix so they cannot be confused with,
 # or overwritten by, the nvidia.com/* labels GFD manages.
 #
-# gpu-pool-mixed is the important one. With mig.strategy=none GFD now describes
-# the V100 accurately (product=Tesla-PG500-216, memory=32768, compute 7.0) — but
-# the nvidia.com/gpu pool still contains all THREE devices, so two thirds of it
-# does not match those labels. A pod that selects on nvidia.com/gpu.memory=32768
-# can still be handed a P4. Until the P4s are hidden from the driver (see
-# EXTERNAL-NODE-SETUP.md), treat nvidia.com/gpu on this node as untyped.
+# gpu-pool-mixed is the important one. With mig.strategy=none GFD describes the
+# V100 accurately (product=Tesla-PG500-216, memory=32768, compute 7.0) — but the
+# nvidia.com/gpu pool still contains all THREE devices, so two thirds of it does
+# not match those labels. Pin by UUID rather than selecting on nvidia.com/gpu.*.
 GPU_INVENTORY_LABELS=(
   "hierocracy.home/gpu-total-count=3"
   "hierocracy.home/gpu-v100-count=1"
@@ -88,6 +108,12 @@ GPU_INVENTORY_LABELS=(
   "hierocracy.home/gpu-heterogeneous=true"
   "hierocracy.home/gpu-pool-mixed=true"
   "hierocracy.home/gpu-labels-describe=tesla-v100-32gb"
+  # Per-card UUIDs for pinning. Read with:
+  #   kubectl get node inference-0 \
+  #     -o jsonpath='{.metadata.labels.hierocracy\.home/gpu-v100-uuid}'
+  "hierocracy.home/gpu-v100-uuid=${GPU_UUID_V100}"
+  "hierocracy.home/gpu-p4-0-uuid=${GPU_UUID_P4_0}"
+  "hierocracy.home/gpu-p4-1-uuid=${GPU_UUID_P4_1}"
 )
 
 echo "[GPU-OP] Ensuring kubectl path and KUBECONFIG..."
@@ -386,7 +412,7 @@ node-feature-discovery:
     nodeSelector:
       role: storage-node
 devicePlugin:
-  enabled: true
+  enabled: ${DEVICE_PLUGIN_ENABLED}
   runtimeClassName: nvidia
   nodeSelector:
     gpu: "true"
