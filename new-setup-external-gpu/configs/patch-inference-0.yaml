@@ -31,10 +31,25 @@ machine:
     # See EXTERNAL-NODE-SETUP.md for how to build or locate this image.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4
     wipe: true
+  # WARNING: do NOT add node-role.kubernetes.io/* here.
+  #
+  # The NodeRestriction admission plugin forbids a kubelet from self-assigning
+  # node-role.kubernetes.io/* labels, and Talos's k8s.NodeApplyController submits
+  # every entry in this map as a SINGLE patch. One rejected label therefore fails
+  # the whole batch, and NONE of these labels reach the Node object:
+  #
+  #   nodes "inference-0" is forbidden: is not allowed to modify labels:
+  #   node-role.kubernetes.io/inference
+  #
+  # That failure is silent from kubectl's point of view — the machine config
+  # looks correct and the node simply has no labels. It is only visible in
+  # 'talosctl logs controller-runtime' on the node.
+  #
+  # The node-role marker is applied instead with kubectl (admin credentials, not
+  # the kubelet's) by the preflight in 52-install-gpu-operator.sh.
   nodeLabels:
-    node-role.kubernetes.io/inference: ""
+    # Selected by 52-install-gpu-operator.sh: 'gpu' for the device plugin, GFD,
+    # DCGM exporter and the Talos validation-fix DaemonSet; 'role' for the
+    # node-feature-discovery worker.
     gpu: "true"
-    # Selected by 52-install-gpu-operator.sh for the node-feature-discovery
-    # worker. Set here (declaratively, via Talos) rather than with kubectl so it
-    # survives reboots and re-enrollment.
     role: inference-node

@@ -75,6 +75,18 @@ label_by_pattern() {
 label_by_pattern '^worker-[0-9]+$'    'role=storage-node'
 label_by_pattern '^inference-[0-9]+$' 'role=inference-node'
 
+# 'gpu=true' also comes from Talos machine.nodeLabels, but is re-asserted here for
+# the same reason: the device plugin, GFD, DCGM exporter and the validation-fix
+# DaemonSet all select on it, and a node missing it silently gets no GPU pods.
+label_by_pattern '^inference-[0-9]+$' 'gpu=true'
+
+# node-role.kubernetes.io/* CANNOT be set via Talos machine.nodeLabels — the
+# NodeRestriction admission plugin rejects kubelet self-assignment of that prefix,
+# and because Talos submits nodeLabels as one patch, including it there silently
+# discards every other label on the node. Applying it here works because kubectl
+# uses admin credentials rather than the kubelet's.
+label_by_pattern '^inference-[0-9]+$' 'node-role.kubernetes.io/inference='
+
 if [ -z "$(${KUBECTL} get nodes -l role=storage-node -o name 2>/dev/null)" ]; then
   echo "ERROR: No node carries role=storage-node. The gpu-operator controller and" >&2
   echo "       node-feature-discovery master cannot schedule, and the Helm install" >&2
