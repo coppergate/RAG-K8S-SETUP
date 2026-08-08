@@ -48,19 +48,62 @@ onto its static `192.168.5.x` address. No second DHCP server is needed.
 
 ## Run order
 
-| # | Host | Script | Purpose |
-|---|---|---|---|
-| 1 | hierophant | `hierophant-host-net.sh` | br-lan over enp5s0; host IP on bridge |
-| 2 | hierophant | `hierophant-libvirt-net.sh` | define libvirt `lan` network |
-| 3 | hegemon | `hegemon-host-net.sh` | br-lan over eno1; retire agent-link + hook; define `lan` |
-| 4 | hegemon | (attach dev-fedora NIC to `lan`, reboot the VM) | see script output |
-| 5 | dev-fedora | `dev-fedora-net.sh` | static LAN IP + kubeconfig/talosconfig |
+This runs in three phases. The key subtleties: the two hierophant network
+scripts are **also invoked by `../config-cluster.sh`** (step 2), and the
+dev-fedora step must come **after** the cluster exists (it pulls the kubeconfig).
 
-Steps 1–2 are also invoked automatically by `../config-cluster.sh` (step 2).
+### Phase 1 — hierophant, then build the cluster
 
-> ⚠ Running the host-net scripts moves the host IP onto the bridge, briefly
-> dropping the link. Run them from a console/IPMI session, or detached with
-> `nohup`.
+Run from the **console/IPMI, not SSH** — the host IP moves onto `br-lan` and the
+link briefly drops.
+
+```bash
+cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
+sudo bash network/hierophant-host-net.sh      # br-lan over enp5s0 (brief blip)
+sudo bash network/hierophant-libvirt-net.sh   # libvirt 'lan' network
+
+sudo FRESH_INSTALL=true bash ./config-cluster.sh
+```
+
+You *can* skip the two manual calls — `config-cluster.sh` runs them itself
+(idempotently) in step 2. But doing `hierophant-host-net.sh` from the console
+**first** performs the IP-onto-bridge cutover cleanly, so the build isn't what
+drops your session; the in-script re-run is then a no-op.
+
+### Phase 2 — hegemon (management access; can run in parallel with the build)
+
+Also from the console — hegemon's host IP moves onto `br-lan` too.
+
+```bash
+sudo bash network/hegemon-host-net.sh
+
+# Point the dev-fedora VM at the LAN and reboot it (also printed by the script):
+sudo virsh attach-interface dev-fedora network lan --model virtio --config
+sudo virsh reboot dev-fedora
+```
+
+### Phase 3 — dev-fedora (AFTER the cluster is bootstrapped)
+
+Run inside the dev-fedora VM. This `scp`s the kubeconfig/talosconfig off
+hierophant and verifies `kubectl get nodes`, so the control plane must be up.
+
+```bash
+bash network/dev-fedora-net.sh
+```
+
+### Summary
+
+| Phase | Host | Action |
+|---|---|---|
+| 1 | hierophant | `hierophant-host-net.sh` → `hierophant-libvirt-net.sh` → `config-cluster.sh` |
+| 2 | hegemon | `hegemon-host-net.sh` + `virsh` attach dev-fedora NIC to `lan` + reboot VM |
+| 3 | dev-fedora | `dev-fedora-net.sh` (after the cluster is up) |
+
+> ⚠ The host-net scripts move the host IP onto the bridge, briefly dropping the
+> link — run them from a console/IPMI session, or detached with `nohup`.
+>
+> The GPU inference node is **not** part of `config-cluster.sh`; enroll it
+> separately with `../45-enroll-external-node.sh` after setting `inference_0_mac`.
 
 ## DNS records for `hierocracy.home`
 

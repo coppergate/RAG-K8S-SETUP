@@ -3,8 +3,9 @@ machine:
         # NOTE: interfaces are defined per-node (configs/patch-*.yaml) with static
         # 192.168.5.x addresses on the single flat-LAN NIC (eth0). Talos merges
         # network.interfaces by the 'interface:' key, so nothing is defined here.
+        # Only the real zone. A bare "hierocracy" suffix generates <host>.hierocracy
+        # lookups that Technitium SERVFAILs and that leak to public DNS.
         searchDomains:
-            - "hierocracy"
             - "hierocracy.home"
         nameservers:
             - "192.168.1.210"
@@ -17,8 +18,13 @@ machine:
                   - hierophant.hierocracy.home
                   - hierophant
     time:
+        # Multiple sources so a single unreachable/unresolvable server does not
+        # strand the node's clock (a wrong clock cascades into TLS/DNSSEC/join
+        # failures). NOTE: these are hostnames — they depend on DNS resolving at
+        # boot. If LAN-local NTP is added later, prefer its IP as the first entry.
         servers:
             - "time.nist.gov"
+            - "pool.ntp.org"
     features:
         stableHostname: false
         imageCache:
