@@ -43,11 +43,27 @@ fi
 # 8GB / sm_61 — so a pod scheduled by those labels could land on a P4 and fail on
 # either memory or CUDA arch.
 #
-# The P4s remain physically present and driver-managed; they are simply not
-# offered to the scheduler. They are recorded on the node via the
-# hierocracy.home/* labels applied in the preflight below.
+# HOW THIS IS ENFORCED — named resources, matched on product name.
 #
-# To re-derive these UUIDs after a hardware change (nvidia-smi is not directly
+# NOTE: NVIDIA_VISIBLE_DEVICES does NOT work for this. The GPU operator runs the
+# device plugin and GFD as privileged containers, so /dev/nvidia* is mounted
+# wholesale and NVML enumerates every GPU regardless of that variable — it only
+# governs what the runtime hook injects into an UNPRIVILEGED container. Setting it
+# was tried and had no effect; GFD still reported all three and collapsed the node
+# to "Tesla-P4, count=2", hiding the V100. Do not reintroduce it.
+#
+# What does work is the device plugin's resources.gpus list: each entry maps a
+# product-name glob to a resource name, first match wins. The V100 claims
+# nvidia.com/gpu; the P4s are split off under their own name so they stay usable
+# without ever being mistaken for the V100.
+#
+#   nvidia.com/gpu       -> 1   (Tesla V100 32GB)
+#   nvidia.com/tesla-p4  -> 2   (Tesla P4 8GB)
+#
+# Product names must match what NVML reports (nvidia-smi --query-gpu=name), not
+# GFD's dash-sanitized label form: "Tesla P4", not "Tesla-P4".
+#
+# To re-derive names/UUIDs after a hardware change (nvidia-smi is not directly
 # runnable on Talos, so this goes through a throwaway pod on the node):
 #
 #   kubectl run gpu-probe --restart=Never --rm -i \
@@ -55,19 +71,21 @@ fi
 #     --overrides='{"spec":{"nodeName":"inference-0"}}' \
 #     --env=NVIDIA_VISIBLE_DEVICES=all --env=NVIDIA_DRIVER_CAPABILITIES=utility \
 #     -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
-#
-# Override ADVERTISED_GPU_UUIDS to change which devices are schedulable. Set it to
-# "all" to advertise every GPU (only correct on a homogeneous node).
 # ---------------------------------------------------------------------------
-ADVERTISED_GPU_UUIDS="${ADVERTISED_GPU_UUIDS:-GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb}"
+V100_PRODUCT_PATTERN="${V100_PRODUCT_PATTERN:-Tesla PG500-216}"
+P4_PRODUCT_PATTERN="${P4_PRODUCT_PATTERN:-Tesla P4}"
+P4_RESOURCE_NAME="${P4_RESOURCE_NAME:-nvidia.com/tesla-p4}"
 
 # Node-inventory labels. Custom domain prefix so they cannot be confused with,
-# or overwritten by, the nvidia.com/* labels GFD manages.
+# or overwritten by, the nvidia.com/* labels GFD manages. GFD cannot describe a
+# mixed node coherently — it publishes one product/memory/compute triple for the
+# whole node — so these carry the truth instead.
 GPU_INVENTORY_LABELS=(
   "hierocracy.home/gpu-advertised=tesla-v100-32gb"
   "hierocracy.home/gpu-advertised-count=1"
   "hierocracy.home/gpu-p4-present=true"
   "hierocracy.home/gpu-p4-count=2"
+  "hierocracy.home/gpu-p4-resource=nvidia.com_tesla-p4"
   "hierocracy.home/gpu-total-count=3"
   "hierocracy.home/gpu-heterogeneous=true"
 )
@@ -179,6 +197,13 @@ metadata:
 handler: nvidia
 EOF
 
+# WARNING: do NOT set nvidiaDriverRoot/nvidiaDevRoot here. An earlier version of
+# this ConfigMap pinned nvidiaDriverRoot to "/", but the key was never consumed
+# (devicePlugin.config.default was missing below, so the operator ignored the whole
+# file) and the plugin ran on its default /run/nvidia/driver — which is the layout
+# the nvidia-talos-validation-fix DaemonSet builds. Now that the ConfigMap IS
+# consumed, reinstating that override would point the plugin at a path that does
+# not exist on Talos and break driver validation.
 echo "[GPU-OP] Applying Talos-specific ConfigMap for NVIDIA Device Plugin..."
 ${KUBECTL} apply -n "${NAMESPACE}" -f - <<EOF
 apiVersion: v1
@@ -190,9 +215,18 @@ data:
     version: v1
     flags:
       failOnInitError: true
-      nvidiaDriverRoot: /
-      nvidiaDevRoot: /
+      # 'none' — neither the V100 nor the P4 supports MIG. Leaving this at the
+      # chart default of 'single' makes GFD log "Multiple device types detected"
+      # on this node and pick one product to describe all three GPUs.
+      migStrategy: none
       deviceDiscoveryStrategy: nvml
+    resources:
+      # First match wins. Patterns are globs over the NVML product name.
+      gpus:
+      - pattern: "${V100_PRODUCT_PATTERN}"
+        name: nvidia.com/gpu
+      - pattern: "${P4_PRODUCT_PATTERN}"
+        name: ${P4_RESOURCE_NAME}
     sharing:
       timeSlicing: {}
 EOF
@@ -335,32 +369,26 @@ devicePlugin:
     gpu: "true"
   config:
     name: nvidia-device-plugin-config
+    # REQUIRED. Without 'default' naming the key, the operator ignores the entire
+    # ConfigMap and the plugin silently runs on chart defaults — which is what
+    # advertised all three GPUs as a single nvidia.com/gpu pool.
+    default: config.yaml
   env:
     - name: CDI_ENABLED
       value: "false"
     - name: DEVICE_LIST_STRATEGY
       value: "envvar"
-    # Restricts which GPUs this container can see. The plugin enumerates via NVML
-    # and advertises exactly what it sees, so limiting it here is what makes
-    # nvidia.com/gpu report only the V100. See the inventory block at the top.
-    - name: NVIDIA_VISIBLE_DEVICES
-      value: "${ADVERTISED_GPU_UUIDS}"
 gfd:
   enabled: true
   nodeSelector:
     gpu: "true"
-  # Restricted to the same device set as the device plugin. If GFD saw all three
-  # it would publish nvidia.com/gpu.count=3 against an allocatable of 1, and would
-  # derive .product/.memory/.compute.* from one device on a mixed node.
-  env:
-    - name: NVIDIA_VISIBLE_DEVICES
-      value: "${ADVERTISED_GPU_UUIDS}"
 dcgmExporter:
   enabled: true
   nodeSelector:
     gpu: "true"
-  # Deliberately NOT restricted. The P4s are unschedulable, not unmonitored —
-  # temperature, power and utilization for all three GPUs still reach Grafana.
+  # Not restricted, and cannot usefully be: the P4s are unschedulable under
+  # nvidia.com/gpu but still driver-managed, so temperature, power and utilization
+  # for all three GPUs continue to reach Grafana.
 EOF
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" nvidia/gpu-operator \

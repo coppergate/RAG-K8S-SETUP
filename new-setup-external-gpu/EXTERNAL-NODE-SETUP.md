@@ -294,17 +294,46 @@ those labels could land on a P4 and fail on either memory or CUDA arch.
 
 So `nvidia.com/gpu` reports **1**, and it is genuinely the V100.
 
-**How.** `52-install-gpu-operator.sh` sets `NVIDIA_VISIBLE_DEVICES` to the V100
-UUID on both the device plugin and GFD. The plugin enumerates through NVML and
-advertises what it can see, so restricting its view is what caps the count.
-Override with `ADVERTISED_GPU_UUIDS`; set it to `all` on a homogeneous node.
+**How — named resources, matched on product name.** The device plugin's
+`resources.gpus` list maps a product-name glob to a resource name, first match
+wins:
 
-`dcgmExporter` is deliberately **not** restricted — the P4s are unschedulable,
-not unmonitored, so temperature, power and utilization for all three still reach
-Grafana.
+```yaml
+resources:
+  gpus:
+  - pattern: "Tesla PG500-216"
+    name: nvidia.com/gpu
+  - pattern: "Tesla P4"
+    name: nvidia.com/tesla-p4
+```
+
+Giving `nvidia.com/gpu: 1` (the V100) and `nvidia.com/tesla-p4: 2`. Patterns match
+the NVML product name (`nvidia-smi --query-gpu=name`), **not** GFD's
+dash-sanitized label form — `Tesla P4`, not `Tesla-P4`. Override via
+`V100_PRODUCT_PATTERN`, `P4_PRODUCT_PATTERN` and `P4_RESOURCE_NAME`.
+
+> ⚠ **`NVIDIA_VISIBLE_DEVICES` does not work for this.** The operator runs the
+> device plugin and GFD as **privileged** containers, so `/dev/nvidia*` is mounted
+> wholesale and NVML enumerates every GPU regardless — that variable only governs
+> what the runtime hook injects into an *unprivileged* container. It was tried:
+> GFD still saw all three and collapsed the node to `gpu.product=Tesla-P4`,
+> `gpu.count=2`, hiding the V100 entirely. Don't reintroduce it.
+
+Two further requirements, both easy to miss:
+
+- `devicePlugin.config.default: config.yaml` must be set in the Helm values, or
+  the operator ignores the ConfigMap wholesale and the plugin runs on chart
+  defaults. This was the original failure.
+- The ConfigMap must **not** set `nvidiaDriverRoot`/`nvidiaDevRoot`. The plugin's
+  default `/run/nvidia/driver` is the layout `nvidia-talos-validation-fix` builds;
+  overriding it to `/` points at a path that doesn't exist on Talos.
+
+`dcgmExporter` is deliberately unrestricted — the P4s are unschedulable under
+`nvidia.com/gpu` but still driver-managed, so temperature, power and utilization
+for all three still reach Grafana.
 
 **The P4s are still there.** Driver-managed, `/dev/nvidia1` and `/dev/nvidia2`,
-just not offered to the scheduler. They are recorded on the node as:
+addressable via `nvidia.com/tesla-p4`. They are recorded on the node as:
 
 ```text
 hierocracy.home/gpu-advertised=tesla-v100-32gb
@@ -316,9 +345,35 @@ hierocracy.home/gpu-heterogeneous=true
 ```
 
 The custom domain prefix keeps them clear of the `nvidia.com/*` namespace GFD
-owns. To use a P4 deliberately, bypass the device plugin: schedule with
-`nodeSelector: gpu=true` and set `NVIDIA_VISIBLE_DEVICES` to that P4's UUID
-directly, without requesting an `nvidia.com/gpu` resource.
+owns. To use a P4 deliberately, request its own resource — no UUID juggling:
+
+```yaml
+resources:
+  limits:
+    nvidia.com/tesla-p4: 1
+```
+
+Note that GFD's node-level `nvidia.com/gpu.product`, `.memory` and `.compute.*`
+labels still describe only one of the two models — GFD has no way to express a
+mixed node. Schedule on the resource names and the `hierocracy.home/gpu-*` labels
+above; do not trust `nvidia.com/gpu.product` on this node.
+
+### GPU smoke test
+
+`nvidia/cuda:12.3.1-base-ubuntu22.04` is seeded in the bootstrap registry for
+this. Confirm each pool binds the hardware you expect:
+
+```bash
+# Should report the V100 (32768 MiB)
+/home/k8s/kube/kubectl run gpu-test-v100 --restart=Never --rm -i \
+  --image=hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04 \
+  --overrides='{"spec":{"containers":[{"name":"c","image":"hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04","command":["nvidia-smi","--query-gpu=name,memory.total","--format=csv"],"resources":{"limits":{"nvidia.com/gpu":1}}}]}}'
+
+# Should report a Tesla P4 (7680 MiB)
+/home/k8s/kube/kubectl run gpu-test-p4 --restart=Never --rm -i \
+  --image=hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04 \
+  --overrides='{"spec":{"containers":[{"name":"c","image":"hierophant.hierocracy.home:5000/nvidia/cuda:12.3.1-base-ubuntu22.04","command":["nvidia-smi","--query-gpu=name,memory.total","--format=csv"],"resources":{"limits":{"nvidia.com/tesla-p4":1}}}]}}'
+```
 
 Re-derive the UUIDs after a hardware change (`nvidia-smi` cannot be run directly
 on Talos, so this goes through a throwaway pod):
