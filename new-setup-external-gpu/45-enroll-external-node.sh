@@ -203,8 +203,9 @@ else
         sleep ${RETRY_INTERVAL}
     done
 
-    # Verify the modules actually loaded. If this fails, 52-install-gpu-operator.sh
-    # will stall in driver validation, so surface it here rather than 10 minutes later.
+    # Verify the modules actually loaded. If this fails, the GPU Operator
+    # (complete-build/infrastructure/nvidia-operator.sh) will stall in driver
+    # validation, so surface it here rather than 10 minutes later.
     echo "  Verifying NVIDIA kernel modules are loaded..."
     if sudo -E ${TALOS_ROOT}/talosctl \
             --talosconfig "${TALOSCONFIG}" \
@@ -254,6 +255,10 @@ echo " Network  : flat LAN (192.168.5.x) — reachable from every host and the c
 echo " GPU patch: $([ "${SKIP_GPU_PATCH:-false}" = "true" ] && echo "SKIPPED (SKIP_GPU_PATCH=true)" || echo "applied + rebooted")"
 echo ""
 echo " Next steps:"
-echo "   ./52-install-gpu-operator.sh   — Install NVIDIA GPU Operator"
-echo "   ./55-label-gpu-nodes.sh        — Label inference-0 with gpu/gpu-count"
+echo "   The GPU Operator is no longer installed from this repo. It moved to"
+echo "   complete-build/infrastructure/nvidia-operator.sh and runs automatically"
+echo "   as Step 1.9 of setup-complete.sh (before the RAG stack, because it"
+echo "   publishes the gpu=true and hierocracy.home/gpu-*-uuid node labels that"
+echo "   Ollama pins against). To run it on its own:"
+echo "     bash complete-build/infrastructure/nvidia-operator.sh"
 echo "======================================================="

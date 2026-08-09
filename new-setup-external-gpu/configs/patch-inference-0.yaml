@@ -46,31 +46,35 @@ machine:
   # 'talosctl logs controller-runtime' on the node.
   #
   # The node-role marker is applied instead with kubectl (admin credentials, not
-  # the kubelet's) by the preflight in 52-install-gpu-operator.sh.
+  # the kubelet's) by complete-build/scripts/setup-node-labels.sh.
   nodeLabels:
-    # Selected by 52-install-gpu-operator.sh: 'gpu' for the device plugin, GFD,
+    # Selected by complete-build/infrastructure/nvidia-operator.sh: 'gpu' for the device plugin, GFD,
     # DCGM exporter and the Talos validation-fix DaemonSet; 'role' for the
     # node-feature-discovery worker.
     gpu: "true"
     role: inference-node
-    # GPU inventory. This node is heterogeneous: 1x Tesla V100 32GB (sm_70) and
-    # 2x Tesla P4 8GB (sm_61), and ALL THREE sit in one nvidia.com/gpu pool —
-    # per-product resource naming is unimplemented in device plugin v0.19.3.
     #
-    # gpu-pool-mixed is the one that matters: GFD's nvidia.com/gpu.* labels
-    # describe the V100 only, so selecting on them can still land a pod on a P4.
-    # Custom domain prefix so these cannot collide with the labels GFD owns.
-    # See the "Heterogeneous GPUs" section of EXTERNAL-NODE-SETUP.md.
-    hierocracy.home/gpu-total-count: "3"
-    hierocracy.home/gpu-v100-count: "1"
-    hierocracy.home/gpu-p4-count: "2"
-    hierocracy.home/gpu-heterogeneous: "true"
-    hierocracy.home/gpu-pool-mixed: "true"
-    hierocracy.home/gpu-labels-describe: "tesla-v100-32gb"
-    # Per-card UUIDs. Workloads pin a specific GPU by setting
-    # NVIDIA_VISIBLE_DEVICES to one of these (see EXTERNAL-NODE-SETUP.md).
-    # UUIDs are stable across reboots but NOT across a card being reseated or
-    # replaced — re-derive with the gpu-probe recipe if the hardware changes.
-    hierocracy.home/gpu-v100-uuid: "GPU-ce06ba79-6e2e-b16e-e326-3ba4747c6ecb"
-    hierocracy.home/gpu-p4-0-uuid: "GPU-6a3e90b5-542c-4189-8385-62224608c4fa"
-    hierocracy.home/gpu-p4-1-uuid: "GPU-d5cfa048-3ff2-dcec-f9bc-d0c7797dfbb5"
+    # REMOVED 2026-08-09 — the hierocracy.home/gpu-* inventory and per-card UUID
+    # labels used to be declared here as well. They are now owned solely by
+    # complete-build/infrastructure/nvidia-operator.sh.
+    #
+    # Two reasons, beyond just ending the duplication:
+    #
+    # 1. These UUIDs are DISCOVERED facts, not configuration. Declaring them in
+    #    the machine config means Talos re-asserts whatever was written here on
+    #    every config apply. nvidia-operator.sh probes the live card and writes
+    #    what it finds, so if a GPU is reseated or replaced the two sources
+    #    disagree and Talos wins — silently repinning every workload to a UUID
+    #    that no longer exists.
+    #
+    # 2. One of them was simply wrong. 'gpu-labels-describe: tesla-v100-32gb'
+    #    asserted that GFD's nvidia.com/gpu.* labels describe the V100. Observed
+    #    live on 2026-08-09 with MIG_STRATEGY=none correctly set, GFD was
+    #    reporting product=Tesla-P4 / memory=7680 / compute 6.1 instead. The
+    #    label is not re-created anywhere: an unverifiable claim is worse than
+    #    no label.
+    #
+    # 'gpu' and 'role' above are kept here deliberately. They are node identity
+    # rather than discovered inventory, and they must exist before the operator
+    # runs — the device plugin, GFD, DCGM exporter and validation-fix DaemonSet
+    # all select on gpu=true. nvidia-operator.sh re-asserts both idempotently.

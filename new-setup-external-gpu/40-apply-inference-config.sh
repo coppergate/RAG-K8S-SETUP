@@ -20,7 +20,8 @@ set -e
 #
 # NOTE: 50-inference-gpu-setup.sh (PCI passthrough) does NOT apply here.
 #       The GPU is natively attached to the physical node.
-#       Run 52-install-gpu-operator.sh and 55-label-gpu-nodes.sh after enrollment.
+#       The GPU Operator is owned by complete-build, not this repo:
+#       complete-build/infrastructure/nvidia-operator.sh (Step 1.9 of setup-complete.sh).
 # ==============================================================================
 
 if [ -z "${SETUP_ROOT}" ]; then
@@ -76,8 +77,9 @@ echo "     modules — the GPU operator cannot validate without them):"
 echo "       talosctl --nodes ${INFERENCE_IP_0} --endpoints ${CP_VIP} \\"
 echo "         patch machineconfig --mode=reboot \\"
 echo "         --patch @configs/post-inference-talos.yaml"
-echo "  3. Run: ./52-install-gpu-operator.sh"
-echo "  4. Run: ./55-label-gpu-nodes.sh"
+echo "  3. GPU Operator: owned by complete-build, not this repo. It runs as"
+echo "     Step 1.9 of setup-complete.sh, or standalone with:"
+echo "       bash complete-build/infrastructure/nvidia-operator.sh"
 echo ""
 echo "NOTE: 45-enroll-external-node.sh performs steps 1-2 automatically."
 echo "      This script is normally invoked by it, not run standalone."

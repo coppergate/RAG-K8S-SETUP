@@ -1,5 +1,23 @@
 # External GPU Node Setup Guide
 
+> **Ownership note (2026-08-09).** The NVIDIA GPU Operator is no longer installed
+> from this repo. `52-install-gpu-operator.sh` and `55-label-gpu-nodes.sh` were
+> **deleted**; their logic now lives in
+> **`complete-build/infrastructure/nvidia-operator.sh`**, which runs automatically
+> as Step 1.9 of `setup-complete.sh` — before the RAG stack, because it publishes
+> the `gpu=true` and `hierocracy.home/gpu-*-uuid` node labels that Ollama pins
+> against.
+>
+> The split is: **this repo owns Talos-level node provisioning** (machine config,
+> kernel modules, driver extensions, enrolment); **complete-build owns every
+> Kubernetes object** (operator Helm release, RuntimeClass, device-plugin
+> ConfigMap, validation-fix DaemonSet, GPU node labels).
+>
+> The analysis below — heterogeneous GPU handling, the two approaches that failed,
+> the Talos validator layout — is still accurate and is why the operator is
+> configured the way it is. Only the script names have moved. Where the text says
+> `52-install-gpu-operator.sh`, read `complete-build/infrastructure/nvidia-operator.sh`.
+
 This document covers the steps specific to enrolling the physical GPU inference node
 into the `new-setup-external-gpu` cluster. The base cluster (control-plane + workers)
 is set up by `config-cluster.sh` first. For the overall network design see
@@ -225,9 +243,10 @@ vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr, confirm di
 #    If the MAC isn't set, pass the maintenance IP explicitly:
 #    INFERENCE_MAINT_IP=192.168.0.NN ./45-enroll-external-node.sh
 
-# 4. Install GPU Operator and label the node
-./52-install-gpu-operator.sh
-./55-label-gpu-nodes.sh
+# 4. Install the GPU Operator and label the node.
+#    Owned by complete-build; runs automatically as Step 1.9 of setup-complete.sh.
+#    To run it on its own:
+bash /mnt/hegemon-share/share/code/complete-build/infrastructure/nvidia-operator.sh
 ```
 
 ### The GPU post-boot patch (step 6 of enrollment)
@@ -419,7 +438,7 @@ Inside the container GPUs are renumbered `0..N-1` in the order listed, so
 > To remove the hazard entirely, re-run with the device plugin off:
 >
 > ```bash
-> DEVICE_PLUGIN_ENABLED=false ./52-install-gpu-operator.sh
+> DEVICE_PLUGIN_ENABLED=false bash complete-build/infrastructure/nvidia-operator.sh
 > ```
 >
 > This deletes `nvidia.com/gpu` from the node. DCGM metrics, GFD labels and the
@@ -486,11 +505,11 @@ on Talos, so this goes through a throwaway pod):
 `nvidia-container-toolkit` system extension), which means the GPU operator never
 creates the `nvidia` RuntimeClass it normally would. Since the values set
 `devicePlugin.runtimeClassName: nvidia`, and a pod naming a missing RuntimeClass
-is rejected outright, `52-install-gpu-operator.sh` creates it explicitly.
+is rejected outright, `complete-build/infrastructure/nvidia-operator.sh` creates it explicitly.
 
 ### Node `role` labels
 
-`52-install-gpu-operator.sh` pins the operator controller and the
+`complete-build/infrastructure/nvidia-operator.sh` pins the operator controller and the
 node-feature-discovery master to `role=storage-node`, and the NFD worker to
 `role=inference-node`. These come from Talos `machine.nodeLabels`:
 
@@ -499,6 +518,6 @@ node-feature-discovery master to `role=storage-node`, and the NFD worker to
 | `role=storage-node` | `configs/patch-worker-0..3.yaml` |
 | `role=inference-node` | `configs/patch-inference-0.yaml` |
 
-`52-install-gpu-operator.sh` also applies them with `kubectl` as a preflight, so
+`complete-build/scripts/setup-node-labels.sh` applies them with `kubectl`, so
 clusters built before those patches existed still work. Without the labels the
 Helm install hangs on Pending pods until it times out.
