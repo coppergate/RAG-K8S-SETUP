@@ -18,7 +18,7 @@ RETRY_INTERVAL=15
 for i in $(seq 1 $MAX_RETRIES); do
     echo "[Bootstrap] Attempt $i of $MAX_RETRIES..."
     # Capture both stdout and stderr to check for AlreadyExists error
-    if BOOTSTRAP_OUT=$(sudo -E ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" bootstrap --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}" 2>&1); then
+    if BOOTSTRAP_OUT=$( ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" bootstrap --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}" 2>&1); then
         echo "[✓] Bootstrap command accepted."
         break
     else
@@ -41,13 +41,13 @@ done
 #sleep 150
 #
 #echo "checking cluster members"
-#sudo -E ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" get members --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}"
+# ${TALOS_ROOT}/talosctl -n "${CP_IP_0}" get members --endpoints "${CP_IP_0}" --talosconfig "${TALOSCONFIG}"
 #
 echo "WRITING kubeconfig"
 for i in $(seq 1 $MAX_RETRIES); do
     echo "[Kubeconfig] Attempt $i of $MAX_RETRIES..."
-#    if sudo -E ${TALOS_ROOT}/talosctl kubeconfig "${KUBE_CONFIG}/kubeconfig"  --endpoints "${CP_IP_0}" --nodes "${CP_VIP}" --talosconfig "${TALOSCONFIG}" --force; then
-    if sudo -E ${TALOS_ROOT}/talosctl kubeconfig "${KUBE_CONFIG}/kubeconfig" --nodes "${CP_VIP}" --talosconfig "${TALOSCONFIG}" --force; then
+#    if  ${TALOS_ROOT}/talosctl kubeconfig "${KUBE_CONFIG}/kubeconfig"  --endpoints "${CP_IP_0}" --nodes "${CP_VIP}" --talosconfig "${TALOSCONFIG}" --force; then
+    if  ${TALOS_ROOT}/talosctl kubeconfig "${KUBE_CONFIG}/kubeconfig" --nodes "${CP_VIP}" --talosconfig "${TALOSCONFIG}" --force; then
         echo "[✓] Kubeconfig written successfully."
         break
     else

@@ -104,12 +104,12 @@ MAINT_IP="${INFERENCE_MAINT_IP:-${INFERENCE_IP_0}}"
 # ---------------------------------------------------------------------------
 # NOT run under sudo. talosctl authenticates with the talosconfig client
 # certificate, not local root: it needs no local privilege to talk to a node.
-# The sudo -E wrappers this repo used were both unnecessary and actively
+# The  wrappers this repo used were both unnecessary and actively
 # harmful -- junie has no passwordless sudo on hierophant, so over a batch SSH
 # session sudo prompts for a password, fails, and the caller sees only a
 # generic timeout. Verified 2026-08-22: every talosctl call in this flow
 # succeeds as junie without sudo. (15-apply-cp-config.sh and
-# 35-apply-worker-config.sh still wrap talosctl in sudo -E; they are unchanged
+# 35-apply-worker-config.sh still wrap talosctl in ; they are unchanged
 # here because they were not exercised this session.)
 TALOSCTL="${TALOS_ROOT}/talosctl"
 

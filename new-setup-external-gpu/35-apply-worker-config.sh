@@ -22,7 +22,7 @@ i=0
 for ip in "${BOOT_WORKER_IPS[@]}"; do
     if [ -n "$ip" ]; then
         echo "  Applying to ${ip} (patch: configs/patch-worker-${i}.yaml)..."
-        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure \
+         ${TALOS_ROOT}/talosctl apply-config --insecure \
             --talosconfig "${TALOSCONFIG}" \
             --nodes "$ip" \
             --endpoints "$ip" \

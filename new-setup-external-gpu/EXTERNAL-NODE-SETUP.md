@@ -331,12 +331,12 @@ source ./config-env.sh
 source ./config-endpoints.sh
 
 # Expect nvidia, nvidia_uvm, nvidia_drm, nvidia_modeset
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+ ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
   --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
   read /proc/modules | grep nvidia
 
 # Expect ext-nvidia-persistenced in a Running/OK state
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+ ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
   --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
   services
 ```
@@ -344,7 +344,7 @@ sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
 To re-apply on an already-enrolled node without re-running enrollment:
 
 ```bash
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+ ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
   --nodes "${INFERENCE_IP_0}" --endpoints "${CP_VIP}" \
   patch machineconfig \
   --patch "@configs/post-inference-talos.yaml" \

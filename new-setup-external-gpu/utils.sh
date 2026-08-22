@@ -137,7 +137,7 @@ wait_for_talos() {
         #    service. Both halves matter, and getting either wrong makes this
         #    function hang for its whole timeout and then fail:
         #
-        #    * This used to run under 'sudo -E'. talosctl authenticates with the
+        #    * This used to run under ''. talosctl authenticates with the
         #      talosconfig client certificate, not local root, so sudo bought
         #      nothing -- and junie has no passwordless sudo on hierophant, so
         #      over a batch SSH session sudo prompts for a password and the

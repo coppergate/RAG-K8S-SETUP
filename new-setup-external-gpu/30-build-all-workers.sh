@@ -89,7 +89,7 @@ for i in {0..3}; do
   sudo -n dd if=/dev/zero of="${!disk_var}" bs=1M count=10 conv=fsync || true
 
   echo "Running virt-install for $name..."
-  sudo -E virt-install \
+   virt-install \
     --virt-type kvm \
     --name "$name" \
     --ram "$ram" \

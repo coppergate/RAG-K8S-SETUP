@@ -30,7 +30,7 @@ sudo mkdir -p "${TALOS_CONFIG}"
 
 # Generate base config. The URL here is a placeholder — the real cluster endpoint
 # (https://192.168.5.10:6443) is set by configs/cluster-patches.yaml below.
-sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_VIP}:6443" \
+ ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_VIP}:6443" \
     --install-disk /dev/vda \
     --install-image "${INSTALLER_IMAGE}" \
     --output "${TALOS_CONFIG}" \
@@ -38,9 +38,9 @@ sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_VIP}:6443"
 
 # Set talosconfig endpoints and nodes to the permanent static IPs (192.168.5.x)
 echo "Updating talosconfig with management endpoints (192.168.5.x)..."
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+ ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
     config endpoint "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+ ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
     config node "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
 
 echo "Applying global patches to controlplane.yaml and worker.yaml..."
@@ -53,7 +53,7 @@ for f in "controlplane.yaml" "worker.yaml"; do
     #   machine-patches.yaml     — site-wide machine settings (DNS, NTP, kubelet, etc.)
     #   cluster-patches.yaml     — sets cluster endpoint to https://192.168.5.10:6443
     #   talos-registry-patch.yaml — registry mirrors (registry.hierocracy.home:5000)
-    sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
+     ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
         --patch @${SETUP_ROOT}/new-setup-external-gpu/configs/machine-patches.yaml \
         --patch @${SETUP_ROOT}/new-setup-external-gpu/configs/cluster-patches.yaml \
         --patch @${SETUP_ROOT}/new-setup-external-gpu/configs/talos-registry-patch.yaml \
@@ -70,7 +70,7 @@ i=0
 for ip in "${BOOT_IPS[@]}"; do
     if [ -n "$ip" ]; then
         echo "  Applying to ${ip} (patch: configs/patch-control-${i}.yaml)..."
-        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure \
+         ${TALOS_ROOT}/talosctl apply-config --insecure \
             --talosconfig "${TALOSCONFIG}" \
             --nodes "$ip" \
             --file "${TALOS_CONFIG}/controlplane.yaml" \
