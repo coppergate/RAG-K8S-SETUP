@@ -308,6 +308,113 @@ regenerating diffs the module list against the original — any module that
 disappeared without being named in `OMIT_DRIVERS`, or any loss of `xfs`/`dm_mod`/
 `lvm`, triggers an automatic rollback.
 
+### 1.10 External GPU Node — Install Disk Selection (inference-0)
+
+**Failure seen 2026-08-22.** Repeated attempts to install Talos on the external
+GPU node installed onto the **USB boot stick** instead of the internal SSD.
+
+`configs/patch-inference-0.yaml` hardcoded `disk: /dev/sda` alongside
+`wipe: true`. On a physical machine booted from the Talos USB, the stick is a
+USB-attached SCSI device and the kernel gives it the **first** `sd*` name —
+`/dev/sda`. The internal SATA SSD becomes `/dev/sdb`; an NVMe SSD is not an
+`sd*` device at all. So the config named the boot medium.
+
+Two things made it stick:
+
+1. The `# TODO: Confirm the install disk device name` in the patch was never
+   resolved, and the pre-enrolment checklist item "Install disk confirmed" had
+   nothing enforcing it.
+2. The documented way to confirm it could not run. `EXTERNAL-NODE-SETUP.md`
+   said `talosctl disks --insecure` — **that subcommand does not exist in Talos
+   v1.12**, it was removed in favour of `talosctl get disks`. Anyone following
+   the doc got "unknown command" and moved on.
+
+#### Correct procedure
+
+Device names are not stable on this node. Select the disk by hardware
+attribute, never by path. With the node booted from the Talos USB and in
+maintenance mode (temporary `192.168.0.x` DHCP lease):
+
+```bash
+# On hierophant:
+cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
+INFERENCE_MAINT_IP=<maintenance-ip> ./40-apply-inference-config.sh --list-disks
+```
+
+That applies nothing. It prints every block device with transport, size, model
+and serial, positively identifies the Talos boot medium, and emits the block to
+paste under `machine.install` in `configs/patch-inference-0.yaml`:
+
+```yaml
+    diskSelector:
+      serial: "S5Y2NG0R512345K"
+```
+
+Then run the apply with no arguments (or let `45-enroll-external-node.sh` do
+it):
+
+```bash
+INFERENCE_MAINT_IP=<maintenance-ip> ./40-apply-inference-config.sh
+```
+
+#### Why diskSelector rather than disk
+
+Per the Talos v1.12 configuration reference, `machine.install.diskSelector`
+*"Always has priority over `disk`"*. That matters here because
+`configs/machine-patches.yaml` sets `disk: /dev/vda` for the libvirt VMs and
+that value is baked into `worker.yaml`, which the inference node also consumes.
+Matchers available in v1.12: `serial`, `wwid`, `model`, `name`, `modalias`,
+`uuid`, `type` (`ssd|hdd|nvme|sd`), `busPath`, `size`. Multiple keys are ANDed.
+**Prefer `serial`** — it is unique per drive and survives replugging, SATA port
+changes and enumeration order.
+
+#### The guard
+
+`40-apply-inference-config.sh` now queries the node's live inventory and
+re-resolves the selector immediately before applying. It **exits non-zero**
+rather than apply if the target:
+
+- is the Talos boot medium (an `iso9660` volume labelled `TALOS_*`, or any
+  `usb`-transport disk),
+- is a CD-ROM or a read-only device,
+- matches no disk, or matches more than one,
+- still contains the `REPLACE_ME` placeholder, or
+- uses a matcher key Talos does not support.
+
+On success it also pins `machine.install.disk` to the same device the selector
+resolved to, so the applied config cannot carry a contradictory `/dev/vda`.
+
+Escape hatches:
+
+```bash
+INFERENCE_INSTALL_DISK_SERIAL=<serial>   # select without editing the YAML
+INFERENCE_INSTALL_DISK_WWID=<wwid>       # ditto, by WWID
+ALLOW_UNSAFE_INSTALL_DISK=true           # downgrade the guard to a warning
+```
+
+#### After the install: pull the stick
+
+The node reboots to install. If the BIOS boot order still prefers USB and the
+stick is inserted, it boots the ISO again and returns to **maintenance mode** —
+which looks exactly like the install having failed. Remove the stick or change
+the boot order before that first reboot.
+
+#### Useful raw queries
+
+```bash
+/home/k8s/talos/talosctl get disks \
+    --insecure --nodes <maintenance-ip> --endpoints <maintenance-ip>
+
+# Positively identifies the boot medium: look for name=iso9660, label=TALOS_*
+/home/k8s/talos/talosctl get discoveredvolumes \
+    --insecure --nodes <maintenance-ip> --endpoints <maintenance-ip>
+```
+
+Note `talosctl get -o json` emits a stream of concatenated JSON objects — not a
+JSON array and not JSONL — so `jq -s` (slurp) is required, and a plain
+`json.load` will fail.
+
+
 ## 2. Operational Procedures & Session Management
 
 ### 2.1 Session Establishment (Operational Context)

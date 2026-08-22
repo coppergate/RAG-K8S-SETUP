@@ -23,10 +23,40 @@ machine:
       - network: 0.0.0.0/0
         gateway: 192.168.0.1
   install:
-    # TODO: Confirm the install disk device name before applying.
-    #       In maintenance mode: talosctl disks --insecure -n <maintenance-ip>
-    #       Typically /dev/sda for a single SSD; may be /dev/nvme0n1 for NVMe.
-    disk: /dev/sda
+    # ------------------------------------------------------------------
+    # INSTALL DISK — selected by stable hardware attribute, NOT by device
+    # name. Do not put a 'disk: /dev/sdX' key back here.
+    #
+    # WHY (failure observed 2026-08-22): this used to read 'disk: /dev/sda'.
+    # On a physical machine booted from the Talos USB, the stick is a
+    # USB-attached SCSI device and the kernel gives it the FIRST sd* name --
+    # /dev/sda. The internal SATA SSD becomes /dev/sdb, and an NVMe SSD is
+    # not an sd* device at all. So '/dev/sda' named the boot medium, and
+    # with 'wipe: true' below the installer targeted the stick it was
+    # running from instead of the local drive.
+    #
+    # diskSelector matches on hardware attributes, so enumeration order,
+    # replugging the stick, and SATA port changes are all irrelevant.
+    # Per the Talos v1.12 config reference, diskSelector "Always has
+    # priority over disk" -- which also neutralises the inherited
+    # 'disk: /dev/vda' that machine-patches.yaml sets for the libvirt VMs.
+    #
+    # HOW TO FILL THIS IN: with the node in maintenance mode, run
+    #     ./40-apply-inference-config.sh --list-disks
+    # It prints every disk, positively identifies the Talos boot medium,
+    # and emits the exact block to paste below.
+    #
+    # Matchers available in v1.12: serial, wwid, model, name, modalias,
+    # uuid, type (ssd|hdd|nvme|sd), busPath, size ('>= 1TB' etc).
+    # Prefer 'serial' -- it is unique per drive. Combining matchers is an
+    # AND: every key listed must match the same disk.
+    #
+    # 40-apply-inference-config.sh refuses to apply while the placeholder
+    # is present, if the selector matches no disk or more than one, or if
+    # it resolves to the boot medium / a CD-ROM / a read-only device.
+    # ------------------------------------------------------------------
+    diskSelector:
+      serial: "REPLACE_ME_RUN_40_WITH_--list-disks"
     # GPU node requires a Talos installer image with NVIDIA system extensions.
     # See EXTERNAL-NODE-SETUP.md for how to build or locate this image.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4

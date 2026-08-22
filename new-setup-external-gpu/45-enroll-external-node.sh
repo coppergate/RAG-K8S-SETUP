@@ -30,6 +30,12 @@ set -e
 #   - GPU node booted from Talos USB and in maintenance mode (DHCP from the LAN
 #     router); its maintenance IP is discovered via ARP by this script
 #   - Cluster is healthy (./20-bootstrap-cp.sh and ./35-apply-worker-config.sh done)
+#   - machine.install.diskSelector filled in in configs/patch-inference-0.yaml.
+#     With the node in maintenance mode, get the exact block to paste with:
+#       INFERENCE_MAINT_IP=<ip> ./40-apply-inference-config.sh --list-disks
+#     Step 3 below hard-fails while the REPLACE_ME placeholder is present, and
+#     also if the selector resolves to the boot USB. That guard is the reason
+#     this node no longer installs Talos onto the stick it booted from.
 #
 # IMPORTANT: Run on hierophant.
 # ==============================================================================

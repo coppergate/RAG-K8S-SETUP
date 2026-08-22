@@ -53,7 +53,8 @@ static IP (`192.168.5.31/16`) on it, matched by MAC.
 
 - [ ] `inference_0_mac` set in `05-MAC-addresses.sh` to the GPU node's actual NIC MAC
 - [ ] `deviceSelector.hardwareAddr` in `configs/patch-inference-0.yaml` matches the same MAC
-- [ ] Install disk confirmed (see "Identifying the Disk" below)
+- [ ] Install disk confirmed and written as a `diskSelector` (see
+      "Identifying the Install Disk" below). Do NOT use a `/dev/sdX` name.
 - [ ] Installer image confirmed in registry (see "Talos Image" below)
 - [ ] Cluster is healthy (`kubectl get nodes` shows control-plane + workers Ready)
 - [ ] GPU node is booted from Talos USB and in maintenance mode
@@ -77,19 +78,71 @@ Options (after Talos USB boot, in maintenance mode):
 
 ## Identifying the Install Disk
 
+> **Do not name the install disk by device path.** This is how the node was
+> repeatedly installed onto its own boot stick (see the failure note at the end
+> of this section).
+
 After the GPU node boots from the Talos USB (maintenance mode) it gets a temporary
 `192.168.0.x` DHCP lease from the router. Using that maintenance IP:
 
 ```bash
-sudo /home/k8s/talos/talosctl disks \
+cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
+INFERENCE_MAINT_IP=<maintenance-ip> ./40-apply-inference-config.sh --list-disks
+```
+
+This applies nothing. It prints every block device with its transport, size,
+model and serial, positively identifies the Talos boot medium, and emits a
+ready-to-paste `diskSelector` block, e.g.:
+
+```yaml
+    diskSelector:
+      serial: "S5Y2NG0R512345K"
+```
+
+Paste that under `machine.install` in `configs/patch-inference-0.yaml`,
+replacing the `REPLACE_ME` placeholder. Then run the apply with no arguments.
+
+If you want the raw resource instead, the command is:
+
+```bash
+/home/k8s/talos/talosctl get disks \
     --insecure \
     --nodes <maintenance-ip> \
     --endpoints <maintenance-ip>
 ```
 
-Update `configs/patch-inference-0.yaml` with the correct device:
-- Single SATA SSD: `/dev/sda`
-- NVMe SSD: `/dev/nvme0n1`
+> Note: earlier revisions of this document said `talosctl disks`. That
+> subcommand **does not exist in Talos v1.12** — it was removed in favour of the
+> `get disks` resource query above. Anyone following the old instruction got
+> "unknown command" and moved on without confirming the disk, which is part of
+> why the wrong-disk install went unnoticed.
+
+### Why not `/dev/sda`
+
+This node has no stable device names at install time. It boots from a USB stick,
+and the stick is a USB-attached SCSI device, so the kernel gives it the **first**
+`sd*` name — `/dev/sda`. The internal SATA SSD becomes `/dev/sdb`; an NVMe SSD is
+not an `sd*` device at all. `configs/patch-inference-0.yaml` used to say
+`disk: /dev/sda` with `wipe: true`, so the installer targeted the medium it was
+running from rather than the local drive.
+
+`machine.install.diskSelector` matches on hardware attributes instead
+(`serial`, `wwid`, `model`, `size`, `type`, `busPath`). Per the Talos v1.12
+configuration reference it *"Always has priority over `disk`"*, so it also
+overrides the `disk: /dev/vda` that `configs/machine-patches.yaml` sets for the
+libvirt VMs. Prefer `serial` — it is unique per drive.
+
+`40-apply-inference-config.sh` re-resolves the selector against the node's live
+inventory immediately before applying, and refuses to proceed if it resolves to
+the boot medium, a CD-ROM, a read-only device, nothing, or more than one disk.
+Override with `ALLOW_UNSAFE_INSTALL_DISK=true` only if you mean it.
+
+### After the install: pull the stick
+
+Once the config is applied the node reboots to install. If the BIOS boot order
+still prefers USB and the stick is still inserted, the machine boots the ISO
+again and returns to **maintenance mode** — which looks exactly like the install
+having failed. Remove the stick (or fix the boot order) before that first reboot.
 
 ---
 
@@ -231,7 +284,11 @@ cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
 
 # 1. Set the GPU node MAC (after finding it via console or BIOS)
 vi 05-MAC-addresses.sh             # set inference_0_mac
-vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr, confirm disk
+vi configs/patch-inference-0.yaml  # set deviceSelector.hardwareAddr
+
+# 1b. Identify the install disk (node must be booted into maintenance mode).
+#     Prints the inventory and the diskSelector block to paste. Applies nothing.
+INFERENCE_MAINT_IP=192.168.0.NN ./40-apply-inference-config.sh --list-disks
 
 # 2. Boot GPU node from Talos USB — it gets a temporary 192.168.0.x lease from
 #    the router. 45-enroll discovers that maintenance IP by MAC (ARP).
