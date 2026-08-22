@@ -9,6 +9,7 @@ set -e
 #
 # Usage:
 #   ./40-apply-inference-config.sh --list-disks    # inventory only, applies nothing
+#   ./40-apply-inference-config.sh --check         # resolve + guard only, no apply
 #   ./40-apply-inference-config.sh                 # guard, then apply
 #
 # Prerequisites:
@@ -47,17 +48,24 @@ set -e
 # ==============================================================================
 
 LIST_ONLY=false
+CHECK_ONLY=false
 while [ $# -gt 0 ]; do
     case "$1" in
         -l|--list-disks)
             LIST_ONLY=true
+            ;;
+        -c|--check)
+            # Resolve the configured selector against the live node and run the
+            # full guard, but stop before applying. Use this to confirm the
+            # target immediately before a destructive apply.
+            CHECK_ONLY=true
             ;;
         -h|--help)
             sed -n '4,45p' "$0"
             exit 0
             ;;
         *)
-            echo "ERROR: unknown argument '$1'. Use --list-disks or --help." >&2
+            echo "ERROR: unknown argument '$1'. Use --list-disks, --check or --help." >&2
             exit 1
             ;;
     esac
@@ -422,6 +430,13 @@ if [ ${GUARD_RC} -ne 0 ]; then
 fi
 
 if [ "${LIST_ONLY}" = "true" ]; then
+    exit 0
+fi
+
+if [ "${CHECK_ONLY}" = "true" ]; then
+    echo ""
+    echo "--check specified — guard passed, nothing applied."
+    echo "Re-run without --check to apply and install."
     exit 0
 fi
 

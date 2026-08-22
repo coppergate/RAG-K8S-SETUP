@@ -55,8 +55,13 @@ machine:
     # is present, if the selector matches no disk or more than one, or if
     # it resolves to the boot medium / a CD-ROM / a read-only device.
     # ------------------------------------------------------------------
+    # Resolved 2026-08-22 against the live node in maintenance mode:
+    #   /dev/sda   16 GB  usb   UDisk              <- the boot stick
+    #   /dev/sdb  480 GB  sata  Micron_5100_MTFD   <- this, the internal SSD
+    # The Micron reports no serial, so it is pinned by WWN (NAA identifier),
+    # which is equally unique and equally stable.
     diskSelector:
-      serial: "REPLACE_ME_RUN_40_WITH_--list-disks"
+      wwid: "naa.500a07511626173b"
     # GPU node requires a Talos installer image with NVIDIA system extensions.
     # See EXTERNAL-NODE-SETUP.md for how to build or locate this image.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4
