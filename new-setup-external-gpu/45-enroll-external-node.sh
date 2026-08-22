@@ -59,7 +59,7 @@ RETRY_INTERVAL=15
 # Step 1: Verify cluster API is reachable via VIP
 # ---------------------------------------------------------------------------
 echo "[1/8] Verifying cluster API is reachable at ${CP_VIP}..."
-if ! sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+if ! ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
         health --nodes "${CP_IP_0}" --endpoints "${CP_VIP}" \
         --wait-timeout 60s 2>/dev/null; then
     echo "  Cluster API check timed out — verifying via kubectl instead..."
@@ -98,7 +98,7 @@ echo "  Maintenance IP: ${INFERENCE_MAINT_IP} (final static will be ${INFERENCE_
 
 echo "  Verifying node at ${INFERENCE_MAINT_IP} is in maintenance mode..."
 for i in $(seq 1 10); do
-    if sudo -E ${TALOS_ROOT}/talosctl \
+    if ${TALOS_ROOT}/talosctl \
             --talosconfig "${TALOSCONFIG}" \
             get machinestatus \
             --nodes "${INFERENCE_MAINT_IP}" \
@@ -131,7 +131,7 @@ sleep 60
 
 for i in $(seq 1 $MAX_RETRIES); do
     echo "  [Talos ready check] Attempt $i of $MAX_RETRIES..."
-    if sudo -E ${TALOS_ROOT}/talosctl \
+    if ${TALOS_ROOT}/talosctl \
             --talosconfig "${TALOSCONFIG}" \
             get members \
             --nodes "${CP_IP_0}" \
@@ -180,7 +180,7 @@ fi
 if [ "${SKIP_GPU_PATCH:-false}" = "true" ]; then
     echo "  SKIP_GPU_PATCH=true — skipping. NVIDIA modules will NOT be loaded."
 else
-    sudo -E ${TALOS_ROOT}/talosctl \
+    ${TALOS_ROOT}/talosctl \
         --talosconfig "${TALOSCONFIG}" \
         --nodes "${INFERENCE_IP_0}" \
         --endpoints "${CP_VIP}" \
@@ -213,7 +213,7 @@ else
     # (complete-build/infrastructure/nvidia-operator.sh) will stall in driver
     # validation, so surface it here rather than 10 minutes later.
     echo "  Verifying NVIDIA kernel modules are loaded..."
-    if sudo -E ${TALOS_ROOT}/talosctl \
+    if ${TALOS_ROOT}/talosctl \
             --talosconfig "${TALOSCONFIG}" \
             --nodes "${INFERENCE_IP_0}" \
             --endpoints "${CP_VIP}" \
@@ -230,7 +230,7 @@ else
     # ext-nvidia-persistenced is the extension service that hangs when the
     # modules are missing — report its state explicitly.
     echo "  Extension service state:"
-    sudo -E ${TALOS_ROOT}/talosctl \
+    ${TALOS_ROOT}/talosctl \
         --talosconfig "${TALOSCONFIG}" \
         --nodes "${INFERENCE_IP_0}" \
         --endpoints "${CP_VIP}" \

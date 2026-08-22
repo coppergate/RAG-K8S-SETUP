@@ -102,10 +102,15 @@ MAINT_IP="${INFERENCE_MAINT_IP:-${INFERENCE_IP_0}}"
 # ---------------------------------------------------------------------------
 # Fetch the node's live block-device inventory
 # ---------------------------------------------------------------------------
-# Read-only queries, so deliberately NOT run under sudo: talosctl needs no local
-# privilege to talk to a node, and dropping sudo lets --list-disks work over a
-# batch SSH session (where sudo fails silently). The apply below keeps sudo -E
-# to stay consistent with 15-apply-cp-config.sh and 35-apply-worker-config.sh.
+# NOT run under sudo. talosctl authenticates with the talosconfig client
+# certificate, not local root: it needs no local privilege to talk to a node.
+# The sudo -E wrappers this repo used were both unnecessary and actively
+# harmful -- junie has no passwordless sudo on hierophant, so over a batch SSH
+# session sudo prompts for a password, fails, and the caller sees only a
+# generic timeout. Verified 2026-08-22: every talosctl call in this flow
+# succeeds as junie without sudo. (15-apply-cp-config.sh and
+# 35-apply-worker-config.sh still wrap talosctl in sudo -E; they are unchanged
+# here because they were not exercised this session.)
 TALOSCTL="${TALOS_ROOT}/talosctl"
 
 DISKS_JSON="$(mktemp /tmp/inference-disks.XXXXXX.json)"
@@ -495,7 +500,7 @@ echo "  Install disk   : ${RESOLVED_DEV:-<guard overridden>}"
 echo "  Config dir     : ${TALOS_CONFIG}"
 echo ""
 
-sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure \
+${TALOS_ROOT}/talosctl apply-config --insecure \
     --talosconfig "${TALOSCONFIG}" \
     --nodes "${MAINT_IP}" \
     --endpoints "${MAINT_IP}" \
