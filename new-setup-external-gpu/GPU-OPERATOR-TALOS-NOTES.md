@@ -14,7 +14,11 @@ On Talos with NVIDIA system extensions, key files are exposed under:
 
 Without mapping these Talos paths into `/run/nvidia/driver`, `driver-validation` loops and `ClusterPolicy` can stay not-ready (`state-operator-validation`).
 
-## Scripted Fix (in `52-install-gpu-operator.sh`)
+## Scripted Fix (in `complete-build/infrastructure/nvidia-operator.sh`)
+
+> Moved 2026-08-09: this logic used to live in this repo's
+> `52-install-gpu-operator.sh`, now deleted. complete-build owns the GPU
+> Operator; this repo keeps Talos-level node provisioning only.
 `nvidia-talos-validation-fix` DaemonSet now continuously:
 1. Ensures `/run/nvidia/validations` markers exist (`driver-ready`, `toolkit-ready`, `cuda-ready`).
 2. Creates/refreshes symlinks:

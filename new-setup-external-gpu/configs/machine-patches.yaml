@@ -1,30 +1,30 @@
 machine:
     network:
-        interfaces:
-            - interface: eth0
-              dhcp: true
-            - interface: eth1
-              dhcp: false
+        # NOTE: interfaces are defined per-node (configs/patch-*.yaml) with static
+        # 192.168.5.x addresses on the single flat-LAN NIC (eth0). Talos merges
+        # network.interfaces by the 'interface:' key, so nothing is defined here.
+        # Only the real zone. A bare "hierocracy" suffix generates <host>.hierocracy
+        # lookups that Technitium SERVFAILs and that leak to public DNS.
         searchDomains:
-            - "hierocracy"
             - "hierocracy.home"
         nameservers:
             - "192.168.1.210"
             - "8.8.8.8"
             - "1.1.1.1"
         extraHostEntries:
-            # Bootstrap registry on hierophant — reachable via talos-nat (10.0.0.1)
-            - ip: 10.0.0.1
+            # Bootstrap registry / hierophant on the flat LAN.
+            - ip: 192.168.1.101
               aliases:
                   - hierophant.hierocracy.home
                   - hierophant
-            # hierophant br-app address on lb-net — for cluster-local resolution
-            - ip: 172.20.0.1
-              aliases:
-                  - hierophant-app.hierocracy.home
     time:
+        # Multiple sources so a single unreachable/unresolvable server does not
+        # strand the node's clock (a wrong clock cascades into TLS/DNSSEC/join
+        # failures). NOTE: these are hostnames — they depend on DNS resolving at
+        # boot. If LAN-local NTP is added later, prefer its IP as the first entry.
         servers:
             - "time.nist.gov"
+            - "pool.ntp.org"
     features:
         stableHostname: false
         imageCache:
@@ -45,12 +45,8 @@ machine:
             rotate-server-certificates: "true"
         nodeIP:
             validSubnets:
-                # lb-net — primary management and cluster traffic
-                - 172.20.0.0/16
-                # talos-nat — secondary, bootstrap registry access
-                - 10.0.0.0/24
-                # Physical LAN — for external node connectivity
-                - 192.168.1.0/24
+                # Flat LAN — the single management and cluster network.
+                - 192.168.0.0/16
     files:
         - content: |
             [metrics]

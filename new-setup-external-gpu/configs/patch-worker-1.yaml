@@ -3,8 +3,16 @@ machine:
     hostname: worker-1
     interfaces:
     - interface: eth0
-      dhcp: true
-    - interface: eth1
+      # Flat LAN — single management interface.
       dhcp: false
       addresses:
-      - 172.20.0.111/16
+      - 192.168.5.22/16
+      routes:
+      - network: 0.0.0.0/0
+        gateway: 192.168.0.1
+  nodeLabels:
+    # Selected by complete-build/infrastructure/nvidia-operator.sh for the gpu-operator controller and
+    # the node-feature-discovery master, both of which must run OFF the GPU node.
+    # Also the project-wide marker for non-inference work (see guidelines.md).
+    # Set declaratively via Talos so it survives reboots.
+    role: storage-node

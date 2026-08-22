@@ -141,4 +141,4 @@ for vm in "${OTHER_VMS[@]}"; do
 done
 
 echo "Full restoration complete. All nodes have been drained, restarted, and uncordoned."
-bridge link show | grep -E 'br-app|talos-bridge'
+bridge link show | grep -E 'br-lan'

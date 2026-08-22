@@ -17,15 +17,15 @@ sudo rm -rf "${TALOS_CONFIG}"
 sudo mkdir -p "${TALOS_CONFIG}"
 
 # Generate (using the IP of the first node for the cluster endpoint as a basic fallback)
-sudo -E ${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443" \
+${TALOS_ROOT}/talosctl gen config local-cluster "https://${CP_IP_0}:6443" \
 --install-disk /dev/vda \
 --install-image "${INSTALLER_IMAGE}" \
 --output "${TALOS_CONFIG}" \
 --force 
 
 echo "Updating talosconfig with endpoints and nodes..."
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config endpoint "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
-sudo -E ${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config node "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
+${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config endpoint "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
+${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" config node "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"
 
 echo "Applying global patches (machine-patches.yaml and cluster-patches.yaml) to controlplane.yaml and worker.yaml..."
 for f in "controlplane.yaml" "worker.yaml"; do
@@ -39,7 +39,7 @@ for f in "controlplane.yaml" "worker.yaml"; do
     # talos-registry-patch.yaml: Registry mirrors with fallback to bootstrap registry (10.0.0.1:5000)
     #   Safe to apply from initial build — fallback endpoints allow pulls during bootstrap before
     #   the in-cluster registry (registry.hierocracy.home:5000) is running.
-    sudo -E ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
+    ${TALOS_ROOT}/talosctl machineconfig patch "${TALOS_CONFIG}/$f" \
         --patch @${SETUP_ROOT}/configs/machine-patches.yaml \
         --patch @${SETUP_ROOT}/configs/cluster-patches.yaml \
         --patch @${SETUP_ROOT}/configs/talos-registry-patch.yaml \
@@ -53,7 +53,7 @@ i=0
 for ip in "${CP_IP_0}" "${CP_IP_1}" "${CP_IP_2}"; do
     if [ -n "$ip" ]; then
         echo "Applying to $ip (with node patch configs/patch-control-${i}.yaml)..."
-        sudo -E ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --file "${TALOS_CONFIG}/controlplane.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-control-${i}.yaml"
+        ${TALOS_ROOT}/talosctl apply-config --insecure --talosconfig "${TALOSCONFIG}" --nodes "$ip" --file "${TALOS_CONFIG}/controlplane.yaml" --config-patch "@${SETUP_ROOT}/configs/patch-control-${i}.yaml"
         i=$((i+1))
     fi
 done

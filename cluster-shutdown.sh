@@ -1,8 +1,25 @@
 #!/bin/bash
 # ==============================================================================
 # CLUSTER SHUTDOWN SCRIPT
-# Version: 2.3.0
+# Version: 2.4.0
 # MUST be executed on 'hierophant'
+#
+# Purpose: bring every cluster node hierophant HOSTS down cleanly so the host can
+# be rebooted. Nodes that are not libvirt domains on this host (e.g. the external
+# physical GPU node inference-0) are drained but deliberately left running — this
+# script cannot power them off and does not try.
+#
+# v2.4.0 — the VM list is now DISCOVERED from libvirt rather than hardcoded.
+#   The previous hardcoded list read:
+#     worker-0 worker-1 worker-2 inference-0 inference-1 control-0..2
+#   which was wrong in two ways on the current build: worker-3 was missing
+#   entirely (it exists in the 4-worker layout and was left running through a
+#   host reboot), and inference-0/-1 were listed as VMs when inference-0 is now
+#   an external physical machine. Both failures were SILENT — the completion
+#   check only looked at that same list, so it reported "All VMs shut down
+#   successfully" while a worker was still running.
+#   Discovery also keeps this script correct across the other setup variants,
+#   where inference-0 IS a VM: whatever libvirt reports is what gets stopped.
 # ==============================================================================
 # Ensure we have kubectl and kubeconfig
 KUBECTL="/home/k8s/kube/kubectl"
@@ -194,29 +211,72 @@ done
 echo "Scaling down rook-ceph-operator..."
 $KUBECTL scale deployment.apps/rook-ceph-operator -n "$ROOK_NS" --replicas=0 2>/dev/null
 
-# 4. Stop all VMs
-echo "Step 4: Stopping all cluster VMs..."
-VMS=("worker-0" "worker-1" "worker-2" "inference-0" "inference-1" "control-0" "control-1" "control-2")
+# 4. Stop the cluster VMs hosted on this machine
+echo "Step 4: Stopping cluster VMs hosted on hierophant..."
+
+# Names that count as cluster nodes. Anything else on this host (dev-fedora, etc.)
+# is left strictly alone. Override to widen/narrow the match if node naming changes.
+CLUSTER_VM_PATTERN="${CLUSTER_VM_PATTERN:-^(control|worker|inference)-[0-9]+$}"
+
+# Discover from libvirt rather than assuming. A physical node is simply not a
+# domain here, so it never enters this list.
+mapfile -t VMS < <(sudo virsh list --all --name 2>/dev/null \
+                     | grep -E "${CLUSTER_VM_PATTERN}" | sort)
+
+# Cross-check against Kubernetes so anything we CANNOT power off is called out
+# rather than silently ignored.
+K8S_NODES=$($KUBECTL get nodes -o name 2>/dev/null | cut -d'/' -f2 | sort)
+NON_VM_NODES=()
+if [ -z "${K8S_NODES}" ]; then
+    echo "  WARNING: could not list Kubernetes nodes (API already down?)." >&2
+    echo "  Skipping the VM-vs-node cross-check — any node this host does not" >&2
+    echo "  own will NOT be reported below. Verify by hand before rebooting." >&2
+else
+    for n in $K8S_NODES; do
+        printf '%s\n' "${VMS[@]}" | grep -qx "$n" || NON_VM_NODES+=("$n")
+    done
+fi
+
+echo "  Cluster VMs on this host : ${VMS[*]:-<none>}"
+if [ ${#NON_VM_NODES[@]} -gt 0 ]; then
+    echo ""
+    echo "  NOTE: these Kubernetes nodes are NOT libvirt domains on hierophant:"
+    for n in "${NON_VM_NODES[@]}"; do
+        echo "        - $n"
+    done
+    echo "        They have been drained but will KEEP RUNNING after this script"
+    echo "        finishes. Power them down separately if that is what you want,"
+    echo "        e.g. talosctl -n <ip> shutdown"
+    echo ""
+fi
+
+if [ ${#VMS[@]} -eq 0 ]; then
+    echo "  WARNING: no cluster VMs found on this host. Nothing to stop." >&2
+    echo "  If that is unexpected, check: sudo virsh list --all" >&2
+fi
+
 for vm in "${VMS[@]}"; do
-    if sudo virsh dominfo "$vm" &>/dev/null; then
+    if sudo virsh list --name | grep -qx "$vm"; then
         echo "  Stopping VM: $vm"
         sudo virsh shutdown "$vm"
+    else
+        echo "  $vm is already stopped."
     fi
 done
 
 echo "Waiting for VMs to shut down (max 5 minutes)..."
 MAX_WAIT=300
 ELAPSED=0
+STILL_RUNNING=()
 while [ $ELAPSED -lt $MAX_WAIT ]; do
     STILL_RUNNING=()
     for vm in "${VMS[@]}"; do
-        if sudo virsh list --name | grep -q "^$vm$"; then
+        if sudo virsh list --name | grep -qx "$vm"; then
             STILL_RUNNING+=("$vm")
         fi
     done
 
     if [ ${#STILL_RUNNING[@]} -eq 0 ]; then
-        echo "All VMs shut down successfully."
         break
     fi
 
@@ -225,11 +285,36 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     ELAPSED=$((ELAPSED + 10))
 done
 
-if [ $ELAPSED -ge $MAX_WAIT ]; then
-    echo "Error: Some VMs failed to shut down gracefully after $MAX_WAIT seconds."
+if [ ${#STILL_RUNNING[@]} -gt 0 ]; then
+    echo "Error: these VMs did not shut down gracefully after ${MAX_WAIT}s." >&2
     for vm in "${STILL_RUNNING[@]}"; do
-        echo "  Forcing shutdown of $vm..."
+        echo "  Forcing shutdown of $vm..." >&2
         sudo virsh destroy "$vm"
     done
+    sleep 5
 fi
-echo "Cluster shutdown complete."
+
+# Final verification — never claim success without re-checking libvirt.
+FAILED=()
+for vm in "${VMS[@]}"; do
+    sudo virsh list --name | grep -qx "$vm" && FAILED+=("$vm")
+done
+
+echo ""
+if [ ${#FAILED[@]} -gt 0 ]; then
+    echo "=============================================================" >&2
+    echo " SHUTDOWN INCOMPLETE — DO NOT REBOOT THE HOST" >&2
+    echo " Still running: ${FAILED[*]}" >&2
+    echo " Rebooting now would kill these mid-write." >&2
+    echo "=============================================================" >&2
+    exit 1
+fi
+
+echo "============================================================="
+echo " All ${#VMS[@]} cluster VMs on hierophant are stopped."
+echo " Safe to: sudo reboot"
+if [ ${#NON_VM_NODES[@]} -gt 0 ]; then
+    echo ""
+    echo " Still running elsewhere (not touched): ${NON_VM_NODES[*]}"
+fi
+echo "============================================================="

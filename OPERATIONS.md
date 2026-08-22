@@ -60,8 +60,28 @@ bash ./cluster-shutdown.sh
     3.  Quiesces Ceph cluster (sets maintenance flags like `noout`).
     4.  Drains all Kubernetes nodes (control-plane and worker/inference) while storage is still available.
     5.  Scales down Rook-Ceph components (mgr -> others -> osd -> mon).
-    6.  Shuts down all cluster VMs via `virsh`.
+    6.  Shuts down the cluster VMs **hosted on hierophant**, discovered from
+        `virsh list --all` (v2.4.0+ — see note below).
     7.  Saves the original replica counts to `/home/k8s/kube/cluster-replicas.state`.
+
+> **The external GPU node is NOT powered off.** `inference-0` is a physical
+> machine, not a libvirt domain, so this script drains it but cannot stop it —
+> it keeps running after the script finishes and through the host reboot. The
+> script prints it explicitly under "these Kubernetes nodes are NOT libvirt
+> domains on hierophant". To stop it as well:
+> ```bash
+> /home/k8s/talos/talosctl --talosconfig /home/k8s/talos/config/talosconfig \
+>   --nodes 192.168.5.31 --endpoints 192.168.5.10 shutdown
+> ```
+
+> **v2.4.0 — do not reintroduce a hardcoded VM list.** The list was previously
+> fixed in the script and had drifted: `worker-3` was absent (so it survived the
+> shutdown and was killed by the host reboot) and `inference-0`/`inference-1`
+> were listed as VMs when `inference-0` had become external hardware. Both
+> failures were silent, because the completion check used the same stale list and
+> reported success. The script now discovers domains from libvirt, cross-checks
+> against `kubectl get nodes`, re-verifies before claiming success, and **exits
+> non-zero with "DO NOT REBOOT THE HOST"** if anything is still running.
 
 #### Rebooting
 Once the script confirms all VMs have shut down, you can safely reboot the host.
@@ -80,15 +100,26 @@ cd /mnt/hegemon-share/share/code/kubernetes-setup
 bash ./cluster-startup.sh
 ```
 - **What it does**:
-    1.  Detaches GPUs from the host PCI bus.
-    2.  Starts all cluster VMs.
-    3.  Waits for the Kubernetes API and all nodes to be Ready.
+    1.  Detaches host GPUs from the PCI bus — **only for devices that actually
+        exist on this host** (v2.4.0+). On the current build the GPUs live in the
+        external node, so this is a no-op; skip explicitly with `--no-gpu`.
+    2.  Starts the cluster VMs **hosted on hierophant**, discovered from
+        `virsh list --all` (same contract as `cluster-shutdown.sh`).
+    3.  Waits for every VM-backed node to be Ready (bounded to 420s), then
+        reports any Kubernetes node this host does not own.
     4.  **Admission Controller Cleanup**: Deletes the `k8tz` `MutatingWebhookConfiguration` (if present) as a safeguard to ensure core networking (Flannel) can start without mutation deadlocks.
     5.  Uncordons all nodes.
     6.  Restores Rook-Ceph in order (mon -> osd -> others).
     7.  Unfreezes Ceph state (unsets maintenance flags).
     8.  Restores all other resources from `/home/k8s/kube/cluster-replicas.state` in the correct reverse-shutdown order (Infrastructure -> Bus -> Apps).
     9.  **Admission Controller Restoration**: Reinstalls the `k8tz` admission controller via `helm upgrade --install` once the cluster is stable.
+
+> **The external GPU node is not started either.** `inference-0` is not a libvirt
+> domain, so this script cannot power it on — it must be brought up out of band
+> (physically, IPMI, or Wake-on-LAN; no method is wired up yet). The script
+> reports its Ready state and warns if it is down. If it was left running through
+> the host reboot — the default with `cluster-shutdown.sh` v2.4.0 — it rejoins on
+> its own once the control plane returns, and step 2 uncordons it.
 
 ### 1.4 Pulsar Infrastructure & Health
 Pulsar is installed by `setup-complete.sh` (Step 1.5.8) — NOT by `setup-all.sh`.
@@ -228,6 +259,161 @@ The cluster uses `k8tz` to inject the `Europe/London` (BST) timezone into all po
 -   **Injection**: Pods receive a `k8tz` init container and a `TZ` environment variable.
 -   **Inclusion**: All namespaces except `k8tz` itself are included (including `kube-system`).
 -   **Verification**: `date` inside pods should show `BST`.
+
+### 1.9 `/boot` Space and Initramfs Size (hierophant)
+
+**Failure seen 2026-08-08.** A kernel update installed `6.12.0-211.44.1` but
+produced **no initramfs**: `dracut` needed ~160M in `/boot` and had 108M free, so
+it failed in `%post` while the RPM transaction succeeded anyway. GRUB's BLS
+default follows the newest kernel, so the host would not boot it.
+
+The numbers make this structural rather than bad luck:
+
+```text
+/boot            781M
+initramfs        ~152M each  (+ ~40M kdump, + 16M vmlinuz per kernel)
+rescue image     ~176M
+installonly_limit=3  ->  ~821M required  ->  exceeds the partition
+```
+
+**Recovery** (from a working kernel):
+
+```bash
+sudo dnf remove --oldinstallonly --setopt=installonly_limit=2 -y
+sudo dracut --force --kver <new-kernel-version>
+ls -lh /boot/initramfs-<new-kernel-version>.img     # MUST exist before rebooting
+sudo grubby --set-default=/boot/vmlinuz-<new-kernel-version>
+```
+
+> Do not reboot until that `ls` shows a ~150M file. If `dracut` hit the space
+> wall again you will land straight back in an unbootable default entry.
+
+**Diagnosis notes.** `hostonly="yes"` is already set by the distro
+(`/usr/lib/dracut/dracut.conf.d/01-dist.conf`), which is why kernel modules are
+only ~9.7M — there is no win available there. The bulk is firmware (~104M) and
+generic userspace (~109M), measured uncompressed. Beware that `lsinitrd -s`
+sorts **ascending**, so use `tail`, not `head`, to see the largest entries.
+
+**Reducing it** — use `trim-initramfs.sh` in the repo root:
+
+```bash
+sudo ./trim-initramfs.sh analyze                      # report only, changes nothing
+sudo OMIT_DRIVERS="amdgpu i915" ./trim-initramfs.sh apply --kver <ver> --yes
+sudo ./trim-initramfs.sh rollback --kver <ver>        # if the trim misbehaves
+```
+
+It trims **one kernel at a time**, leaving the other kernel and the rescue image
+untouched as fallbacks, backs the original up outside `/boot`, and after
+regenerating diffs the module list against the original — any module that
+disappeared without being named in `OMIT_DRIVERS`, or any loss of `xfs`/`dm_mod`/
+`lvm`, triggers an automatic rollback.
+
+### 1.10 External GPU Node — Install Disk Selection (inference-0)
+
+**Failure seen 2026-08-22.** Repeated attempts to install Talos on the external
+GPU node installed onto the **USB boot stick** instead of the internal SSD.
+
+`configs/patch-inference-0.yaml` hardcoded `disk: /dev/sda` alongside
+`wipe: true`. On a physical machine booted from the Talos USB, the stick is a
+USB-attached SCSI device and the kernel gives it the **first** `sd*` name —
+`/dev/sda`. The internal SATA SSD becomes `/dev/sdb`; an NVMe SSD is not an
+`sd*` device at all. So the config named the boot medium.
+
+Two things made it stick:
+
+1. The `# TODO: Confirm the install disk device name` in the patch was never
+   resolved, and the pre-enrolment checklist item "Install disk confirmed" had
+   nothing enforcing it.
+2. The documented way to confirm it could not run. `EXTERNAL-NODE-SETUP.md`
+   said `talosctl disks --insecure` — **that subcommand does not exist in Talos
+   v1.12**, it was removed in favour of `talosctl get disks`. Anyone following
+   the doc got "unknown command" and moved on.
+
+#### Correct procedure
+
+Device names are not stable on this node. Select the disk by hardware
+attribute, never by path. With the node booted from the Talos USB and in
+maintenance mode (temporary `192.168.0.x` DHCP lease):
+
+```bash
+# On hierophant:
+cd /mnt/hegemon-share/share/code/kubernetes-setup/new-setup-external-gpu
+INFERENCE_MAINT_IP=<maintenance-ip> ./40-apply-inference-config.sh --list-disks
+```
+
+That applies nothing. It prints every block device with transport, size, model
+and serial, positively identifies the Talos boot medium, and emits the block to
+paste under `machine.install` in `configs/patch-inference-0.yaml`:
+
+```yaml
+    diskSelector:
+      serial: "S5Y2NG0R512345K"
+```
+
+Then run the apply with no arguments (or let `45-enroll-external-node.sh` do
+it):
+
+```bash
+INFERENCE_MAINT_IP=<maintenance-ip> ./40-apply-inference-config.sh
+```
+
+#### Why diskSelector rather than disk
+
+Per the Talos v1.12 configuration reference, `machine.install.diskSelector`
+*"Always has priority over `disk`"*. That matters here because
+`configs/machine-patches.yaml` sets `disk: /dev/vda` for the libvirt VMs and
+that value is baked into `worker.yaml`, which the inference node also consumes.
+Matchers available in v1.12: `serial`, `wwid`, `model`, `name`, `modalias`,
+`uuid`, `type` (`ssd|hdd|nvme|sd`), `busPath`, `size`. Multiple keys are ANDed.
+**Prefer `serial`** — it is unique per drive and survives replugging, SATA port
+changes and enumeration order.
+
+#### The guard
+
+`40-apply-inference-config.sh` now queries the node's live inventory and
+re-resolves the selector immediately before applying. It **exits non-zero**
+rather than apply if the target:
+
+- is the Talos boot medium (an `iso9660` volume labelled `TALOS_*`, or any
+  `usb`-transport disk),
+- is a CD-ROM or a read-only device,
+- matches no disk, or matches more than one,
+- still contains the `REPLACE_ME` placeholder, or
+- uses a matcher key Talos does not support.
+
+On success it also pins `machine.install.disk` to the same device the selector
+resolved to, so the applied config cannot carry a contradictory `/dev/vda`.
+
+Escape hatches:
+
+```bash
+INFERENCE_INSTALL_DISK_SERIAL=<serial>   # select without editing the YAML
+INFERENCE_INSTALL_DISK_WWID=<wwid>       # ditto, by WWID
+ALLOW_UNSAFE_INSTALL_DISK=true           # downgrade the guard to a warning
+```
+
+#### After the install: pull the stick
+
+The node reboots to install. If the BIOS boot order still prefers USB and the
+stick is inserted, it boots the ISO again and returns to **maintenance mode** —
+which looks exactly like the install having failed. Remove the stick or change
+the boot order before that first reboot.
+
+#### Useful raw queries
+
+```bash
+/home/k8s/talos/talosctl get disks \
+    --insecure --nodes <maintenance-ip> --endpoints <maintenance-ip>
+
+# Positively identifies the boot medium: look for name=iso9660, label=TALOS_*
+/home/k8s/talos/talosctl get discoveredvolumes \
+    --insecure --nodes <maintenance-ip> --endpoints <maintenance-ip>
+```
+
+Note `talosctl get -o json` emits a stream of concatenated JSON objects — not a
+JSON array and not JSONL — so `jq -s` (slurp) is required, and a plain
+`json.load` will fail.
+
 
 ## 2. Operational Procedures & Session Management
 

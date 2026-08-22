@@ -1,9 +1,8 @@
 cluster:
     controlPlane:
-        # Management network VIP on lb-net (172.20.x.x / br-app / eno1 VLAN 20).
-        # This network is reachable by the external GPU inference node on the
-        # physical network via the inter-switch VLAN 20 trunk.
-        endpoint: https://172.20.0.15:6443
+        # Control-plane VIP on the flat LAN (eth0). Floats among CP nodes via L2 ARP.
+        # Also resolvable as https://k8s-api.hierocracy.home:6443.
+        endpoint: https://192.168.5.10:6443
     extraManifests:
         - https://raw.githubusercontent.com/alex1989hu/kubelet-serving-cert-approver/main/deploy/standalone-install.yaml
         - https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml

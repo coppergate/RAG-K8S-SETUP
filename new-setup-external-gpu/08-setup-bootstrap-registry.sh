@@ -58,7 +58,7 @@ if [ ! -f "${REGISTRY_CONFIG_DIR}/tls.crt" ]; then
         -keyout "${REGISTRY_CONFIG_DIR}/tls.key" \
         -out "${REGISTRY_CONFIG_DIR}/tls.crt" \
         -subj "/C=US/ST=CO/L=Denver/O=coppergate/CN=hierophant.hierocracy.home" \
-        -addext "subjectAltName=DNS:hierophant.hierocracy.home,DNS:localhost,IP:10.0.0.1,IP:127.0.0.1"
+        -addext "subjectAltName=DNS:hierophant.hierocracy.home,DNS:registry.hierocracy.home,DNS:localhost,IP:192.168.1.101,IP:127.0.0.1"
 fi
 
 # 1.3 Ensure registry:2 image is available in the root podman store.
@@ -135,6 +135,11 @@ seed_image() {
 
 # 2.1 Talos Installers
 seed_image "factory.talos.dev/metal-installer/f1d36a4599ff60d0e94a2a86311470fbc0da2895bef4ba9b2c0288803986a846:v1.12.4" "siderolabs/installer-control-worker:v1.12.4"
+
+# GPU installer for the external inference node (schematic adds NVIDIA extensions:
+# nonfree-kmod-nvidia + nvidia-container-toolkit). Consumed by
+# configs/patch-inference-0.yaml -> machine.install.image. See EXTERNAL-NODE-SETUP.md.
+seed_image "factory.talos.dev/metal-installer/4b03bd8a24f08b4e9a58d122191901bf5e8751eb03e0fc489e59416ab7fb597f:v1.12.4" "siderolabs/installer-gpu:v1.12.4"
 
 # 2.2 Kubernetes Control Plane Images (v1.35.0)
 seed_image "registry.k8s.io/etcd:v3.6.7" "registry.k8s.io/etcd:v3.6.7"

@@ -1,5 +1,13 @@
 # Remote Access Configuration
 
+> **⚠ DEPRECATED (2026-07-19).** This directory's NAT-relay approach
+> (agent-link → hegemon nftables → hierophant hook → talos-nat) is superseded by
+> the flat-LAN redesign in
+> [`new-setup-external-gpu/network/`](../new-setup-external-gpu/network/README.md).
+> On the flat LAN, dev-fedora is bridged directly onto the LAN and reaches the
+> cluster VIP with no routes, NAT, or hooks. Use `network/hegemon-host-net.sh`
+> and `network/dev-fedora-net.sh` instead of the scripts here.
+
 Enables direct `kubectl` access and native Go E2E test execution from `dev-fedora`
 to the Talos Kubernetes cluster, without SSH to `junie@hierophant` or Podman.
 

@@ -1,40 +1,115 @@
 machine:
   network:
     hostname: inference-0
-    # Override the machine-patches.yaml host entry for hierophant.hierocracy.home.
-    # That patch maps it to 10.0.0.1 (talos-nat), which is unreachable from the
-    # GPU node — it has no talos-nat interface. Use 172.20.0.1 (br-app) instead.
-    extraHostEntries:
-    - ip: 172.20.0.1
-      aliases:
-      - hierophant.hierocracy.home
-      - hierophant
+    # No extraHostEntries override needed: machine-patches.yaml already maps
+    # hierophant.hierocracy.home -> 192.168.1.101, which is directly reachable
+    # on the flat LAN from this physical node.
     interfaces:
-    # MAC-based interface matching is used because the physical NIC name
-    # (enp*, eno*, eth*) is hardware-dependent and not known in advance.
-    # Talos will apply this config to whichever NIC has the matching MAC.
+    # MAC-based interface matching (deviceSelector) is used because the physical
+    # NIC name (enp*, eno*, eth*) is hardware-dependent and not known in advance.
+    # Talos applies this config to whichever NIC has the matching MAC.
     #
-    # TODO: Set hardwareAddr to the GPU node's actual NIC MAC address.
-    #       Run 'ip link show' on the node (via console) or check BIOS/UEFI.
-    #       This MAC must match inference_0_mac in 05-MAC-addresses.sh.
-    - hardwareAddr: "00:00:00:00:00:00"   # TODO: set to actual GPU node NIC MAC
+    # NOTE: This MAC must stay in sync with inference_0_mac in
+    #       05-MAC-addresses.sh, which drives ARP-based maintenance-mode
+    #       discovery in 45-enroll-external-node.sh. To re-read it, run
+    #       'ip link show' on the node console or check BIOS/UEFI.
+    - deviceSelector:
+        hardwareAddr: "00:25:90:fb:71:21"   # GPU node NIC (192.168.0.4 in maintenance)
       dhcp: false
       addresses:
-      - 172.20.1.120/16
+      - 192.168.5.31/16
       routes:
-      # Default gateway — main LAN router, reachable from the 172.20.x.x VLAN
+      # Default gateway — the LAN router.
       - network: 0.0.0.0/0
-        gateway: 192.168.1.1
+        gateway: 192.168.0.1
   install:
-    # TODO: Confirm the install disk device name before applying.
-    #       In maintenance mode: talosctl disks --insecure -n 172.20.1.120
-    #       Typically /dev/sda for a single SSD; may be /dev/nvme0n1 for NVMe.
-    disk: /dev/sda
+    # ------------------------------------------------------------------
+    # INSTALL DISK — selected by stable hardware attribute, NOT by device
+    # name. Do not put a 'disk: /dev/sdX' key back here.
+    #
+    # WHY (failure observed 2026-08-22): this used to read 'disk: /dev/sda'.
+    # On a physical machine booted from the Talos USB, the stick is a
+    # USB-attached SCSI device and the kernel gives it the FIRST sd* name --
+    # /dev/sda. The internal SATA SSD becomes /dev/sdb, and an NVMe SSD is
+    # not an sd* device at all. So '/dev/sda' named the boot medium, and
+    # with 'wipe: true' below the installer targeted the stick it was
+    # running from instead of the local drive.
+    #
+    # diskSelector matches on hardware attributes, so enumeration order,
+    # replugging the stick, and SATA port changes are all irrelevant.
+    # Per the Talos v1.12 config reference, diskSelector "Always has
+    # priority over disk" -- which also neutralises the inherited
+    # 'disk: /dev/vda' that machine-patches.yaml sets for the libvirt VMs.
+    #
+    # HOW TO FILL THIS IN: with the node in maintenance mode, run
+    #     ./40-apply-inference-config.sh --list-disks
+    # It prints every disk, positively identifies the Talos boot medium,
+    # and emits the exact block to paste below.
+    #
+    # Matchers available in v1.12: serial, wwid, model, name, modalias,
+    # uuid, type (ssd|hdd|nvme|sd), busPath, size ('>= 1TB' etc).
+    # Prefer 'serial' -- it is unique per drive. Combining matchers is an
+    # AND: every key listed must match the same disk.
+    #
+    # 40-apply-inference-config.sh refuses to apply while the placeholder
+    # is present, if the selector matches no disk or more than one, or if
+    # it resolves to the boot medium / a CD-ROM / a read-only device.
+    # ------------------------------------------------------------------
+    # Resolved 2026-08-22 against the live node in maintenance mode:
+    #   /dev/sda   16 GB  usb   UDisk              <- the boot stick
+    #   /dev/sdb  480 GB  sata  Micron_5100_MTFD   <- this, the internal SSD
+    # The Micron reports no serial, so it is pinned by WWN (NAA identifier),
+    # which is equally unique and equally stable.
+    diskSelector:
+      wwid: "naa.500a07511626173b"
     # GPU node requires a Talos installer image with NVIDIA system extensions.
     # See EXTERNAL-NODE-SETUP.md for how to build or locate this image.
-    # If you have an existing GPU image in the registry, update this path.
     image: hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4
     wipe: true
+  # WARNING: do NOT add node-role.kubernetes.io/* here.
+  #
+  # The NodeRestriction admission plugin forbids a kubelet from self-assigning
+  # node-role.kubernetes.io/* labels, and Talos's k8s.NodeApplyController submits
+  # every entry in this map as a SINGLE patch. One rejected label therefore fails
+  # the whole batch, and NONE of these labels reach the Node object:
+  #
+  #   nodes "inference-0" is forbidden: is not allowed to modify labels:
+  #   node-role.kubernetes.io/inference
+  #
+  # That failure is silent from kubectl's point of view — the machine config
+  # looks correct and the node simply has no labels. It is only visible in
+  # 'talosctl logs controller-runtime' on the node.
+  #
+  # The node-role marker is applied instead with kubectl (admin credentials, not
+  # the kubelet's) by complete-build/scripts/setup-node-labels.sh.
   nodeLabels:
-    node-role.kubernetes.io/inference: ""
+    # Selected by complete-build/infrastructure/nvidia-operator.sh: 'gpu' for the device plugin, GFD,
+    # DCGM exporter and the Talos validation-fix DaemonSet; 'role' for the
+    # node-feature-discovery worker.
     gpu: "true"
+    role: inference-node
+    #
+    # REMOVED 2026-08-09 — the hierocracy.home/gpu-* inventory and per-card UUID
+    # labels used to be declared here as well. They are now owned solely by
+    # complete-build/infrastructure/nvidia-operator.sh.
+    #
+    # Two reasons, beyond just ending the duplication:
+    #
+    # 1. These UUIDs are DISCOVERED facts, not configuration. Declaring them in
+    #    the machine config means Talos re-asserts whatever was written here on
+    #    every config apply. nvidia-operator.sh probes the live card and writes
+    #    what it finds, so if a GPU is reseated or replaced the two sources
+    #    disagree and Talos wins — silently repinning every workload to a UUID
+    #    that no longer exists.
+    #
+    # 2. One of them was simply wrong. 'gpu-labels-describe: tesla-v100-32gb'
+    #    asserted that GFD's nvidia.com/gpu.* labels describe the V100. Observed
+    #    live on 2026-08-09 with MIG_STRATEGY=none correctly set, GFD was
+    #    reporting product=Tesla-P4 / memory=7680 / compute 6.1 instead. The
+    #    label is not re-created anywhere: an unverifiable claim is worse than
+    #    no label.
+    #
+    # 'gpu' and 'role' above are kept here deliberately. They are node identity
+    # rather than discovered inventory, and they must exist before the operator
+    # runs — the device plugin, GFD, DCGM exporter and validation-fix DaemonSet
+    # all select on gpu=true. nvidia-operator.sh re-asserts both idempotently.

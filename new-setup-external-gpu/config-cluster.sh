@@ -3,7 +3,7 @@
 # CLUSTER INSTALLATION ORCHESTRATION — new-setup-external-gpu
 #
 # Installs a 3-control-plane + 4-worker cluster on hierophant (via libvirt VMs)
-# with management on the 172.20.0.0/16 network (lb-net / br-app / eno1 VLAN 20).
+# on the flat physical LAN (192.168.0.0/16). Nodes take static 192.168.5.x IPs.
 #
 # The external GPU inference node is NOT part of this automated flow.
 # Enroll it separately after the cluster is healthy:
@@ -26,9 +26,9 @@ source "${NEW_SETUP_DIR}/scripts/journal-helper.sh"
 init_journal
 
 echo "Starting new-setup-external-gpu cluster installation..."
-echo "  Management network : 172.20.0.0/16 (lb-net / br-app)"
-echo "  Control plane VIP  : 172.20.0.15"
-echo "  Cluster endpoint   : https://172.20.0.15:6443"
+echo "  Management network : 192.168.0.0/16 (flat LAN)"
+echo "  Control plane VIP  : 192.168.5.10"
+echo "  Cluster endpoint   : https://192.168.5.10:6443"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -44,10 +44,9 @@ fi
 # Step 2: Network setup
 # ---------------------------------------------------------------------------
 if ! is_step_done "setup-network"; then
-    echo "[2/8] Setting up network..."
-    ${NEW_SETUP_DIR}/00-init-network.sh
-    ${NEW_SETUP_DIR}/02-setup-network.sh
-    ${NEW_SETUP_DIR}/07-config-vm-net.sh
+    echo "[2/8] Setting up network (flat LAN bridge + libvirt 'lan' network)..."
+    ${NEW_SETUP_DIR}/network/hierophant-host-net.sh
+    ${NEW_SETUP_DIR}/network/hierophant-libvirt-net.sh
     mark_step_done "setup-network"
 fi
 
@@ -72,12 +71,12 @@ if ! is_step_done "build-cp-vms"; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4: Apply control-plane config (Phase 1: via 10.0.0.x DHCP boot IPs)
+# Step 4: Apply control-plane config (Phase 1: via 192.168.0.x DHCP boot IPs)
 # ---------------------------------------------------------------------------
 if ! is_step_done "apply-cp-config"; then
     echo "[4/8] Applying Control Plane configuration..."
-    echo "  NOTE: Using boot-time 10.0.0.x IPs for initial apply."
-    echo "        talosconfig endpoints will be set to 172.20.0.x after this step."
+    echo "  NOTE: Using boot-time 192.168.0.x DHCP IPs for initial apply."
+    echo "        talosconfig endpoints will be set to 192.168.5.x after this step."
     ${NEW_SETUP_DIR}/15-apply-cp-config.sh
     echo "Waiting for Control Plane nodes to reboot and apply configuration..."
     sleep 120
@@ -116,7 +115,7 @@ if ! is_step_done "build-worker-vms"; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Apply worker config (Phase 1: via 10.0.0.x DHCP boot IPs)
+# Step 7: Apply worker config (Phase 1: via 192.168.0.x DHCP boot IPs)
 # ---------------------------------------------------------------------------
 if ! is_step_done "apply-worker-config"; then
     echo "[7/8] Applying Worker configuration..."
@@ -131,14 +130,19 @@ clear_journal
 echo "==============================================================="
 echo " Cluster Installation Complete!"
 echo "==============================================================="
-echo " Control plane VIP : 172.20.0.15"
-echo " Worker nodes      : 172.20.0.110 — 172.20.0.113"
+echo " Control plane VIP : 192.168.5.10"
+echo " Worker nodes      : 192.168.5.21 — 192.168.5.24"
 echo ""
 echo " GPU inference node enrollment (run separately after verifying"
 echo " cluster health):"
 echo "   1. Boot GPU node from Talos USB"
 echo "   2. Verify MAC in 05-MAC-addresses.sh (inference_0_mac)"
 echo "   3. Run: ${NEW_SETUP_DIR}/45-enroll-external-node.sh"
-echo "   4. Run: ${NEW_SETUP_DIR}/52-install-gpu-operator.sh"
-echo "   5. Run: ${NEW_SETUP_DIR}/55-label-gpu-nodes.sh"
+echo ""
+echo " The NVIDIA GPU Operator is NOT installed from this repo any more."
+echo " It is owned by complete-build and runs automatically as Step 1.9 of"
+echo " setup-complete.sh, before the RAG stack:"
+echo "   complete-build/infrastructure/nvidia-operator.sh"
+echo " That script also publishes the gpu=true and hierocracy.home/gpu-*-uuid"
+echo " node labels that the RAG stack's Ollama deployment requires."
 echo "==============================================================="
