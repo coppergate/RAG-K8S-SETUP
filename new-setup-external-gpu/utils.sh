@@ -130,13 +130,39 @@ wait_for_talos() {
             continue
         fi
 
-        # 2. Check Talos API
-        # We use 'talosctl version' because it requires a successful rpc handshake.
-        # We use --insecure because at early stages (maintenance mode) certs might not be set.
-        # In maintenance mode, 'version' might return "Unimplemented", but this still confirms the API is reachable.
-        last_error=$(sudo -E "${TALOS_ROOT}/talosctl" version --nodes "$node_ip" --talosconfig "${TALOSCONFIG}" --short --insecure 2>&1)
-        if [ $? -eq 0 ] || [[ "$last_error" == *"API is not implemented in maintenance mode"* ]]; then
-            echo -e "\n[✓] Talos API is ready at $node_ip"
+        # 2. Check the Talos API. 'version' is used because it requires a
+        #    successful RPC handshake.
+        #
+        #    Probe SECURELY first, then fall back to the insecure maintenance
+        #    service. Both halves matter, and getting either wrong makes this
+        #    function hang for its whole timeout and then fail:
+        #
+        #    * This used to run under 'sudo -E'. talosctl authenticates with the
+        #      talosconfig client certificate, not local root, so sudo bought
+        #      nothing -- and junie has no passwordless sudo on hierophant, so
+        #      over a batch SSH session sudo prompts for a password and the
+        #      probe can never succeed.
+        #
+        #    * This used to pass --insecure unconditionally. That targets the
+        #      MAINTENANCE service, which no longer exists once Talos is
+        #      installed to disk, so an installed node answers
+        #      'tls: certificate required' forever. That made the post-install
+        #      wait in 45-enroll-external-node.sh step 6 unreachable.
+        #
+        #    Secure probe uses the node as its own endpoint so this does not
+        #    depend on the control-plane VIP being up.
+        last_error=$("${TALOS_ROOT}/talosctl" version --nodes "$node_ip" \
+            --endpoints "$node_ip" --talosconfig "${TALOSCONFIG}" --short 2>&1)
+        if [ $? -eq 0 ]; then
+            echo -e "\n[✓] Talos API is ready at $node_ip (secure)"
+            return 0
+        fi
+
+        # Not installed yet (or still booting): try the maintenance service.
+        last_error=$("${TALOS_ROOT}/talosctl" version --nodes "$node_ip" \
+            --endpoints "$node_ip" --talosconfig "${TALOSCONFIG}" --short --insecure 2>&1)
+        if [ $? -eq 0 ] || [[ "$last_error" == *"maintenance mode"* ]]; then
+            echo -e "\n[✓] Talos API is ready at $node_ip (maintenance mode)"
             return 0
         fi
         
@@ -157,7 +183,7 @@ wait_for_talos_health() {
 
     echo "Waiting for Talos health on nodes: $nodes..."
     while [ $(date +%s) -lt $end ]; do
-        if sudo -E "${TALOS_ROOT}/talosctl" health --nodes "$nodes" --talosconfig "${TALOSCONFIG}" --wait-timeout 5s >/dev/null 2>&1; then
+        if "${TALOS_ROOT}/talosctl" health --nodes "$nodes" --talosconfig "${TALOSCONFIG}" --wait-timeout 5s >/dev/null 2>&1; then
             echo "[✓] Talos health check passed for $nodes"
             return 0
         fi
@@ -178,7 +204,7 @@ wait_for_talos_resource() {
 
     echo "Waiting for Talos resource $resource on $node..."
     while [ $(date +%s) -lt $end ]; do
-        if sudo -E "${TALOS_ROOT}/talosctl" get "$resource" --nodes "$node" --talosconfig "${TALOSCONFIG}" >/dev/null 2>&1; then
+        if "${TALOS_ROOT}/talosctl" get "$resource" --nodes "$node" --talosconfig "${TALOSCONFIG}" >/dev/null 2>&1; then
             echo "[✓] Resource $resource is available on $node"
             return 0
         fi
@@ -202,7 +228,7 @@ preflight_check_version() {
     # Use talosctl built-in timeout to avoid external `timeout` dependency.
     # Also guard against `set -e` aborting on non-zero by temporarily disabling errexit.
     set +e
-    out=$(sudo -E "${TALOS_ROOT}/talosctl" --timeout 5s version --nodes "${node_ip}" --insecure --talosconfig "${TALOSCONFIG}" 2>&1)
+    out=$("${TALOS_ROOT}/talosctl" --timeout 5s version --nodes "${node_ip}" --insecure --talosconfig "${TALOSCONFIG}" 2>&1)
     status=$?
     set -e
     # Maintenance mode or unreachable: proceed
