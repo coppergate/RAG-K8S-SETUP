@@ -1,6 +1,9 @@
 # Plan — dual V100 32GB as a multi-tenant inference node
 
-Status: **proposal, nothing applied.** Written 2026-09-07, restructured 2026-09-07.
+Status: **proposal, nothing applied.** Written 2026-09-07, restructured 2026-09-07,
+reviewed for internal consistency 2026-09-07 (VRAM budgets reconciled against the
+serve flags, §9 aligned with the decided client approach, §2/§10 ordering hazard
+documented).
 
 `inference-0` now holds **2× Tesla V100 32GB** and **128 GB of host RAM**. This
 plan treats the node as a small multi-tenant inference host rather than a
@@ -8,16 +11,60 @@ single-model server, and replaces the GPU Ollama deployments with
 [`1CatAI/1Cat-vLLM`](https://github.com/1CatAI/1Cat-vLLM) (Apache-2.0), an
 SM70/V100-targeted vLLM fork.
 
+**§0 gates everything else** — it is first in the document for that reason. Do
+not start §2 before its questions are answered.
+
 Three separable pieces of work, in order:
 
 1. **Retire the heterogeneous-GPU workaround** (§2). The mixed V100+P4 pool is
    gone, so pin-by-UUID, the `gpu-pool-mixed` inventory labels and
    `ollama.gpu.enabled=false` are dead weight and should be deleted.
+   **Read §2.3 first** — done in isolation this step breaks the §10 rollback.
 2. **Land the target topology** (§3–§8): one card for the executor, one card
    for the small models the pipeline is currently missing or running on CPU.
 3. **Migrate the callers** (§9) and cut over (§10).
 
 Piece 1 is worth doing on its own even if vLLM is deferred.
+
+---
+
+## 0. Verify the hardware first (blocking)
+
+Nothing that follows is safe to start until these are answered. `nvidia-smi`
+cannot run on Talos directly, so both probes go through throwaway pods.
+
+```bash
+# PCI inventory — regenerates configs/GPU-Descriptor
+${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
+  --nodes 192.168.5.31 --endpoints "${CP_VIP}" \
+  get pcidevices -o wide | grep -i nvidia
+
+# UUIDs, memory, arch, SKU, driver, and interconnect topology
+/home/k8s/kube/kubectl run gpu-probe --restart=Never --rm -i \
+  --image=hierophant.hierocracy.home:5000/nvcr.io/nvidia/k8s-device-plugin:v0.18.1 \
+  --overrides='{"spec":{"nodeName":"inference-0"}}' \
+  --env=NVIDIA_VISIBLE_DEVICES=all \
+  --env=NVIDIA_DRIVER_CAPABILITIES=utility \
+  -- bash -c 'nvidia-smi --query-gpu=index,uuid,name,memory.total,compute_cap,driver_version,pci.bus_id --format=csv; echo; nvidia-smi -q | grep -iE "Product Name|Board|Bus Type"; echo; nvidia-smi topo -m'
+```
+
+Record:
+
+- **Are the P4s physically gone?** If still seated, the pool is *still* mixed
+  and §2 must not be applied as written.
+- **SKU** — V100 PCIe, V100S PCIe, SXM2, or SXM3. Sets the bandwidth expectation
+  in §1.
+- **NVLink or PCIe** — `NV1`/`NV2` in `topo -m` means NVLink; `PHB`/`SYS` means
+  the interconnect runs over PCIe, possibly cross-socket. Only matters if §3.1
+  is adopted, but `SYS` is worth fixing by reseating regardless.
+- **Driver version.** 1Cat-vLLM wheels target **CUDA 12.8 / PyTorch 2.10 /
+  Python 3.12**. CUDA 12.x minor-version compatibility needs **R525+**; the
+  practical floor for a 12.8 runtime is **R570** unless forward-compat libs ship
+  in the image. The driver comes from the `siderolabs/nonfree-kmod-nvidia`
+  extension baked into
+  `hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4`. **If it is
+  below the floor, a new Image Factory schematic and a node reinstall are
+  prerequisites for §6 onward** — a reboot-window item, so find out now.
 
 ---
 
@@ -58,7 +105,7 @@ the fork behaves identically, and the extra memory buys **capacity only, not
 speed per card**.
 
 > One exception: the **V100S PCIe 32GB** exists only at 32GB and runs 1134 GB/s
-> (not 900), 16.4 TFLOPS FP32, higher boost, still 250W. If Phase 0 identifies
+> (not 900), 16.4 TFLOPS FP32, higher boost, still 250W. If §0 identifies
 > V100S, expect ~26% better decode than the table above. Establish which SKU
 > these are — the existing card enumerates as `Tesla PG500-216`, which means the
 > driver had no marketing name for the board, so neither the SKU nor the form
@@ -89,7 +136,7 @@ and ordinary resource requests work. The whole workaround goes.
 
 | File | Change |
 |---|---|
-| `configs/GPU-Descriptor` | Regenerate from Phase 0. Two V100 rows, no P4 rows. |
+| `configs/GPU-Descriptor` | Regenerate from §0. Two V100 rows, no P4 rows. |
 | `new-setup-external-gpu/configs/patch-inference-0.yaml` | `nodeLabels` keeps `gpu: "true"` and `role: inference-node` — both are node identity and must exist before the operator runs. Only the mixed-pool commentary changes. Confirm no `machine.install.extraKernelArgs: vfio-pci.ids=10de:1bb3` was ever applied; documented as untested, and meaningless with the P4s gone. |
 | `new-setup-external-gpu/EXTERNAL-NODE-SETUP.md` | Rewrite § "Heterogeneous GPUs", § "Targeting a specific GPU", § "Which card for which job", § "GPU smoke test". |
 | `new-setup-external-gpu/45-enroll-external-node.sh` (~l.268) | Closing echo says the operator publishes labels "that Ollama pins against" — restate as vLLM + `nvidia.com/gpu`. |
@@ -141,7 +188,80 @@ This is where the logic lives, and it has a trap in it.
 - Trim the "DO NOT add a `resources:` block" warning (l.114-120) to a pointer at
   the historical appendix.
 
-### 2.3 Verify before moving on
+### 2.3 ⚠ Removing `gpu-v100-uuid` breaks the Ollama rollback
+
+**Verified in code 2026-09-07 — this is a hard failure, not a risk.**
+`complete-build/rag-stack/infrastructure/ollama/ollama.sh:137-144` resolves that
+label and exits non-zero without it:
+
+```bash
+V100_UUID=$($KUBECTL get node "$GPU_NODE" \
+  -o jsonpath='{.metadata.labels.hierocracy\.home/gpu-v100-uuid}' 2>/dev/null || echo "")
+if [[ -z "$V100_UUID" ]]; then
+  echo "ERROR: node $GPU_NODE has no hierocracy.home/gpu-v100-uuid label." >&2
+  exit 1
+fi
+```
+
+`ollama.sh` runs from `setup-complete.sh` as part of the RAG stack step, so once
+§2.2's unset pass strips that label from the live node, **any full install or
+standalone `ollama.sh` run dies there** — before Ollama, and therefore before
+everything sequenced after it.
+
+That collides directly with §10, which keeps `ollama-qwen32b` as the rollback
+path. Scaling an *already-deployed* Deployment back to 1 still works; re-running
+the installer to recreate it does not. The rollback is only as good as the
+install path that produces it.
+
+**Resolution — pick one and write it down:**
+
+| | Approach | Trade-off |
+|---|---|---|
+| **1** (preferred) | Move §10 step 6's `ollama.sh` surgery *forward*, into the same change as §2.2 — details below. | Ollama and vLLM then both request the resource properly and cannot double-book. Slightly more work up front; leaves a coherent rollback. |
+| **2** | Keep `gpu-v100-uuid` published until §10 completes; drop only the P4 and `pool-mixed` labels in §2.2. | Smallest diff, but carries the accounting hole §2 exists to remove, and someone must remember to finish. |
+
+**Approach 1, concretely** — in `complete-build/rag-stack/infrastructure/ollama/`:
+
+1. `ollama.sh`: delete the UUID-resolve block and the `ollama-gpu-pin-v100`
+   ConfigMap (l.113-152).
+2. `values.yaml` and `values-qwen32b.yaml`: flip the `ollama.gpu` block to a
+   real request and drop `extraEnvFrom` for the deleted ConfigMap —
+   ```yaml
+   ollama:
+     gpu:
+       enabled: true
+       type: nvidia
+       number: 1
+   ```
+   The block currently carries only `enabled: false`, so `type` and `number`
+   have to be added, not edited.
+3. **Rewrite the comment above it.** `values-qwen32b.yaml:22-39` is a 17-line
+   "Deliberately FALSE — do not re-enable without reading the note below"
+   warning whose entire premise is the mixed pool. Left in place it actively
+   argues against the correct configuration, which is worse than no comment.
+   Replace it with a dated pointer to the §2.0 historical appendix.
+
+Approach 1 also removes the reason §10 step 1 warns that the two cannot
+co-reside: with Ollama requesting `nvidia.com/gpu: 1` and vLLM requesting the
+other, allocatable 2 covers both and the scheduler keeps them apart. Co-residence
+becomes safe rather than something to work around.
+
+**While in `ollama.sh`, two adjacent staleness bugs:**
+
+- The error message above tells the operator to re-run
+  `52-install-gpu-operator.sh` in `new-setup-external-gpu`. That script was
+  **deleted** in `e1d54a4` (GPU Operator handover). The label now comes from
+  `complete-build/infrastructure/nvidia-operator.sh`. Fix the message wherever
+  the block survives.
+- `ollama.sh:230-231` waits on `deploy/ollama-embed-0` and
+  `deploy/ollama-planner-cpu-0`, which l.172 records as **removed**. Harmless
+  (`|| true`, and `rollout status` fails fast on a missing object) but it is
+  misleading noise in the install log. Delete both lines with the §10 step 6
+  cleanup.
+
+---
+
+### 2.4 Verify before moving on
 
 ```bash
 /home/k8s/kube/kubectl get node inference-0 -o json | python3 -c "
@@ -152,9 +272,16 @@ for k in sorted(l):
 /home/k8s/kube/kubectl get node inference-0 -o jsonpath='{.status.allocatable.nvidia\.com/gpu}{"\n"}'
 ```
 
-Expect `nvidia.com/gpu: 2`, `gpu.product=Tesla-PG500-216`, `gpu.memory=32768`,
-`gpu.compute.major=7`, `gpu.count=2`, and no surviving `p4` /
-`heterogeneous` / `pool-mixed` / `v100-uuid` labels.
+Assert `nvidia.com/gpu: 2`, `gpu.memory=32768`, `gpu.compute.major=7`,
+`gpu.count=2`, and no surviving `p4` / `heterogeneous` / `pool-mixed` /
+`v100-uuid` labels.
+
+**Record, do not assert, `gpu.product`.** The previous card enumerated as
+`Tesla-PG500-216` — a board code, which is what the driver falls back to when it
+has no marketing name (§1). Two different cards, or a different driver, may
+report something else entirely, and GFD's `nvidia.com/gpu.*` labels have already
+proven unreliable on this node. Write down whatever it reports and reconcile it
+with the §0 SKU finding; do not gate the step on a specific string.
 
 ---
 
@@ -177,14 +304,34 @@ VRAM budget (Track A / AWQ figures — NVFP4 shifts these):
 | Card 0 | GB | | Card 1 | GB |
 |---|---|---|---|---|
 | 32B AWQ weights | ~18 | | planner 8B AWQ weights | ~5 |
-| KV @ `fp8_e5m2`, 65,536 ctx | ~8 | | planner KV, 16,384 ctx | ~3 |
+| KV @ `fp8_e5m2`, 57,344 ctx | ~7 | | planner KV, 16,384 ctx | ~2 |
 | activations + CUDA graphs | ~3 | | reranker (568M, fp16) | ~1.5 |
 | | | | embeddings (3 models, fp16) | ~1.5 |
 | | | | 3× CUDA context overhead | ~1.5 |
-| **total** | **~29 / 32** | | **total** | **~12.5 / 32** |
+| **total** | **~28 / 32** | | **total** | **~11.5 / 32** |
 
-Card 1's ~19 GB of headroom is deliberate — it is where a larger planner, a
+Card 1's ~20 GB of headroom is deliberate — it is where a larger planner, a
 second embedding replica, or a draft model goes later.
+
+> **These totals must agree with `--gpu-memory-utilization`, and the earlier
+> draft's did not.** vLLM does not accept a KV size; it *derives* KV from
+> `(utilization × total) − weights − activations`, then refuses to start if the
+> result cannot hold `--max-model-len` tokens for one sequence:
+> `The model's max seq len (N) is larger than the maximum number of tokens that
+> can be stored in KV cache (M)`.
+>
+> Card 0 worked example, at the §5.1 rate of 128 KiB/token (8,192 tokens/GiB):
+>
+> | utilization | budget | − 18 weights − 3 act. | KV tokens | supports 65,536? |
+> |---|---|---|---|---|
+> | 0.90 | 28.8 GB | 7.8 GiB | ~63,900 | **no — fails at startup** |
+> | 0.92 | 29.4 GB | 8.4 GiB | ~68,800 | yes |
+>
+> So `0.90` + `--max-model-len 65536` is **not a valid pair**. §8.1 uses
+> `0.92` with `65536`; the table above quotes the more conservative
+> `--max-model-len 57344`, which fits inside `0.90` with room to spare. Pick one
+> pair and keep both places in sync. Re-run this arithmetic whenever the weight
+> figure changes — an NVFP4 target at ~20.6 GB moves every row.
 
 **Why one container with three processes.** Containers in a pod cannot share a
 GPU device allocation (`nvidia.com/gpu: 1` is granted to one container), but
@@ -215,11 +362,16 @@ It is not the default here because of a scheduling conflict: **a TP2 job needs
 exclusive whole-GPU access to both cards**, which leaves nothing for card 1's
 tenants. Getting both requires one of:
 
-- **Verified spread allocation.** If the device plugin is configured to
-  advertise replicas per card, a pod requesting 2 units could receive two
-  replicas of the *same* physical card, and TP2 would try to initialise two
-  ranks on one GPU. Whether the plugin spreads across physical devices is
-  **unverified** — test it before depending on it.
+- **Nothing, if §3's default stands.** With no sharing configured, allocatable
+  is exactly the two physical devices, so `nvidia.com/gpu: 2` deterministically
+  gets both distinct cards. **This is the common case and it is safe** — the
+  concern below applies only once §4 Option B or C is in play.
+- **Replica aliasing, but only under §4 B/C.** If the plugin is advertising
+  replicas per card, a pod requesting 2 units could receive two replicas of the
+  *same* physical card and TP2 would try to initialise two ranks on one GPU.
+  Whether the plugin spreads across physical devices in that mode is
+  **unverified** — test before depending on it. Do not let this deter TP2 under
+  the default topology; it is not a risk there.
 - **UUID-pinning the executor only** while the small models use ordinary
   requests. Functional, but reintroduces exactly the accounting hole §2 removes.
 
@@ -246,11 +398,20 @@ device-plugin features that parse but do nothing — see §2.0.
 | Option | Mechanism | Cost / risk |
 |---|---|---|
 | **A** (default, §3) | one container, 3 processes | none; but all three restart together |
-| **B** | per-device time-slicing in `devicePlugin.config` | pure ConfigMap change, no new daemon. `renameByDefault: true` + `resources[].devices: [1]` to shard **only** card 1 into `nvidia.com/gpu.shared`. **Verify the `devices` scoping is implemented in plugin v0.19.3** — the sibling `resources` field is not. No memory isolation; budget by `--gpu-memory-utilization` convention. |
+| **B** | per-device time-slicing in `devicePlugin.config` | pure ConfigMap change, no new daemon. `renameByDefault: true` + `sharing.timeSlicing.resources[].devices: [1]` to shard **only** card 1 into `nvidia.com/gpu.shared`. No memory isolation; budget by `--gpu-memory-utilization` convention. **Note this is not the field that failed in §2.0** — see below. |
 | **C** | MPS via `devicePlugin.config` `sharing.mps` | best concurrency; Volta is exactly where hardware-isolated MPS begins, so V100 is well suited. Needs the `mps-control-daemon` DaemonSet, **untested on Talos here** — and the operator has already needed a validation-fix DaemonSet on this node (`GPU-OPERATOR-TALOS-NOTES.md`). MPS + CUDA graphs can also be fragile. |
 
 Try in order A → B → C. Do not adopt B or C to reach the §3 target; they are
 refinements to it.
+
+**On B's prospects.** §2.0's failure was the plugin's **top-level `resources`**
+field, used to advertise a renamed subset of devices — `Customizing the
+'resources' field is not yet supported`. Option B uses
+`sharing.timeSlicing.resources[]`, a *different* config surface: the list that
+time-slicing itself is configured through, with `devices` selecting which
+physical cards a given entry applies to. Conflating the two understates B's
+chances. Still verify `devices` scoping against the deployed plugin version
+before depending on it — but expect it to work, and treat a failure as news.
 
 ---
 
@@ -304,9 +465,10 @@ units/token**. (Qwen2.5-32B lands on the same figure: 64 layers × 8 kv_heads ×
   one-pass grouped attention fast path requires.
 - On one 32 GB card with ~18 GB of AWQ weights, ~8 GB of KV (65,536 tokens) is
   the practical ceiling. Start there: `--max-model-len 65536`,
-  `--gpu-memory-utilization 0.90`, `--max-num-seqs 4`. Raise only with
-  measurements. The v1.2.1 notes explicitly describe conservative profiles "to
-  reduce 32 GB V100 OOM risk".
+  `--gpu-memory-utilization 0.92`, `--max-num-seqs 4` — see §3 for why `0.90`
+  does **not** pair with 65,536, and §8.1 for the canonical flag set. Raise only
+  with measurements. The v1.2.1 notes explicitly describe conservative profiles
+  "to reduce 32 GB V100 OOM risk".
 
 ---
 
@@ -332,16 +494,26 @@ upstream multi-stage *source* build — do not use it.
 ```dockerfile
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.12 python3.12-venv python3-pip ca-certificates && \
+      python3.12 python3.12-venv ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY registry-ca.crt /usr/local/share/ca-certificates/
 RUN update-ca-certificates
+# Ubuntu 24.04 marks the system interpreter externally-managed (PEP 668), so a
+# bare `pip install` fails. Use a venv and put it first on PATH.
+RUN python3.12 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 COPY 1cat_vllm-1.5.0-cp312-cp312-linux_x86_64.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 ENV HF_HUB_OFFLINE=1 VLLM_ATTENTION_BACKEND=FLASH_ATTN_V100
 ENTRYPOINT ["vllm"]
 ```
+
+Two things the earlier draft got wrong here: `pip install` against the system
+interpreter on Ubuntu 24.04 dies with `error: externally-managed-environment`
+(the draft installed `python3.12-venv` but never created a venv), and
+`python3-pip` is unnecessary once a venv provides its own. Both fixed above.
 
 Run the project's own verification snippet **inside the image on the node** — an
 import failure is the signal to drop to v1.3.0:
@@ -375,8 +547,9 @@ or rootless.
 
 ## 7. Get the models onto the cluster
 
-All three 1Cat-recommended repos are public and ungated (verified via the HF
-API, 2026-09-07):
+Model targets by role. The two 1Cat-recommended Track B repos and
+`BAAI/bge-reranker-v2-m3` were confirmed public and ungated via the HF API
+(2026-09-07); the two Track A entries are still unresolved — see open question 4:
 
 | Repo | Size | Role |
 |---|---|---|
@@ -424,22 +597,48 @@ vllm serve /models/qwen-32b-awq \
   --attention-backend FLASH_ATTN_V100 \
   --kv-cache-dtype fp8_e5m2 \
   --max-model-len 65536 \
-  --gpu-memory-utilization 0.90 \
+  --gpu-memory-utilization 0.92 \
   --max-num-seqs 4 \
   --enable-prefix-caching \
   --swap-space 32 \
   --host 0.0.0.0 --port 8000
 ```
 
+`0.92` is not arbitrary — it is the lowest value whose derived KV cache holds
+65,536 tokens against ~18 GB of weights. See the worked table in §3. If the
+executor model's weights change, recompute before changing anything else.
+
 ### 8.2 `gpu-small-models` — card 1
 
 One container, three processes under a supervisor: planner vLLM on :8001
-(`--gpu-memory-utilization 0.12`, `--max-model-len 16384`), reranker on :8002,
+(`--gpu-memory-utilization 0.28`, `--max-model-len 16384`), reranker on :8002,
 embeddings on :8003. Three Services so callers address them independently.
 
-Because these share a card by plain context switching, **the sum of their
-memory budgets must be set by convention** — nothing enforces it. Write the
-budget from §3 into the manifest as a comment.
+**On `0.28`:** utilization is a fraction of the card's *total* memory, not of
+what is free, so the planner's budget must cover its own weights. `0.12` × 32 GB
+= 3.84 GB, which is **less than the ~5 GB of 8B AWQ weights alone** — vLLM would
+fail before it ever allocated KV. `0.28` × 32 GB = 8.96 GB covers ~5 GB weights
++ ~2 GB KV at 16,384 tokens + headroom.
+
+Because these share a card by plain context switching, **the sum of their memory
+budgets must be set by convention** — nothing enforces it. Write the §3 budget
+into the manifest as a comment.
+
+**Start the planner first.** vLLM profiles free VRAM during initialisation to
+size its KV cache. If the reranker and embedding servers are already resident it
+still fits at `0.28`, but the ordering makes the profile deterministic and keeps
+a later utilization bump from silently colliding with them. A supervisor that
+starts :8001, waits for `/health`, then starts :8002 and :8003 is worth the few
+extra lines.
+
+**Probes need care: one pod, three ports.** A Kubernetes readiness probe targets
+a single port, so probing only :8001 leaves the pod `Ready` while the reranker
+or embedding server is dead. Either expose one aggregate health endpoint that
+checks all three locally and probe that, or accept the blind spot **explicitly**
+in the manifest comment. Do not leave it implicit — a silently dead reranker
+degrades retrieval quality without failing anything, which is the hardest class
+of fault to notice. (Compare `rag-admin-api`'s `/api/health/all`, which
+aggregates downstream service health the same way — OPERATIONS.md §5.3.)
 
 ### 8.3 Pod details that are easy to get wrong
 
@@ -488,11 +687,51 @@ Model identifiers change too: `EXECUTOR_MODEL` defaults to `qwen2.5:32b`
 `granite3.1-dense:8b` (l.106); both become whatever `--served-model-name` is set
 to.
 
-**Recommended:** add an OpenAI-protocol client alongside the existing Ollama one
-in `rag-worker`, selected by env var, behind the same interface. One new file,
-contained blast radius, no extra hop, and the Ollama path stays intact for
-rollback. (A translating proxy such as LiteLLM avoids the Go change but adds a
-hop, a component to run, and a second place for timeouts to live.)
+**Decided approach: replace the Ollama client outright with a single
+OpenAI-protocol client.** Not two clients behind an env-var switch — that was an
+earlier recommendation in this document and is superseded. The detailed plan
+lives in `complete-build/documentation/VLLM-CLIENT-MIGRATION-PLAN.md`; this
+section is the summary. (A translating proxy such as LiteLLM was also considered
+and rejected: it avoids the Go change but adds a hop, a component to run, and a
+second place for timeouts to live.)
+
+**Why one client is sufficient, given the staged order below.** Ollama also
+serves an OpenAI-compatible `/v1` surface, and the mirrored image is
+`ollama/ollama:0.15.6` — well past the versions that added
+`/v1/chat/completions`, `/v1/embeddings` and `/v1/models`. So during the staging,
+the *same* client talks to Ollama for the roles that have not moved and to vLLM
+for the roles that have; only the URL and model name differ per role. Two
+consequences worth being explicit about:
+
+- The migration order below does **not** require keeping an Ollama-native
+  client. Every role ends up on vLLM anyway, so a second client would exist only
+  for the duration of the staging, and `/v1` already covers that.
+- The refactor is **testable against the running cluster before vLLM exists**,
+  which decouples the largest non-GPU risk from the hardware work in §0–§8.
+  Do this first; it is the one piece here that needs no new node.
+
+Verify `/v1/embeddings` actually answers on 0.15.6 before assuming the embedding
+path can move; if it does not, only chat migrates and embeddings stay on `/api`.
+
+**Three things the protocol swap costs or exposes:**
+
+- **`load_duration` is unrecoverable.** OpenAI responses carry a `usage` block
+  but none of Ollama's nanosecond timing fields. `ExecutionMetrics.LoadDurationUsec`
+  becomes `0`, and `PromptEvalDurationUsec` degrades to time-to-first-token
+  (streaming only). This feeds the `model_execution_metrics` hypertable
+  (OPERATIONS.md §8.1), so load-duration panels flatline for **all** models, not
+  just the executor. Accepted cost — but update the dashboards rather than
+  leaving a mystery. Token counts survive, and streaming needs
+  `stream_options: {include_usage: true}` to get them.
+- **A latent health-check bug gets exposed.** `rag-worker/cmd/worker/main.go:79,90`
+  assert the concrete type `client.(*ollama.OllamaClient)` and **return `nil`
+  (pass)** for anything else — so a non-Ollama client reports healthy
+  unconditionally. Must become an `interface{ Ping() error }` assertion, or the
+  cutover has no working health signal at exactly the moment it matters.
+- **The reranker does not fit the existing interface.** `ChatClient`
+  (`rag-worker/internal/models/interfaces.go:9`) is only
+  `Chat`/`ChatStream`/`GetEmbeddings`. A reranker is a new client type *and* a
+  new pipeline stage, not a call-site swap — see below.
 
 **The reranker is a new call site, not a migration.** Nothing in the pipeline
 calls one today, so `rag-worker` needs a rerank step between the Qdrant search
@@ -505,13 +744,27 @@ with the Ollama pod still running as rollback:
 1. Executor → `vllm-executor`. Biggest win, smallest change.
 2. Planner → `gpu-small-models`. Frees the last GPU Ollama pod.
 3. Embeddings → `gpu-small-models`. Retires `ollama-embed-2..9` and returns
-   worker CPU. Verify embedding vectors match the CPU path before repointing
-   `rag-ingestion`, or previously-ingested Qdrant vectors become incomparable.
+   worker CPU. Verify vector *equivalence* against the CPU path before
+   repointing `rag-ingestion` — see the hazard note below.
 4. Reranker — new, flagged off, enabled after A/B.
 
-> ⚠ Step 3 is the one with a data hazard. Same model + same pooling should give
-> identical vectors, but confirm empirically against a sample of existing
-> collection entries. If they differ, the collection needs re-ingestion.
+> ⚠ **Step 3 is the one with a data hazard, and the bar is not bit-equality.**
+> GPU and CPU inference of the same model will differ in the low-order bits —
+> different kernels, different accumulation order, possibly fp16 vs fp32. That is
+> expected and harmless. Testing for identical vectors will always "fail" and
+> would wrongly condemn the collection to re-ingestion.
+>
+> The right test is **cosine similarity against a sample of existing collection
+> entries**, re-embedded on the GPU path: expect ≥ 0.9999 for the same model and
+> pooling. Then confirm what actually matters — that top-k Qdrant results for a
+> set of representative queries are unchanged in membership and near-unchanged in
+> order. Perturbations at that magnitude do not move ANN neighbours.
+>
+> Re-ingest only if similarity drops materially (≠ same model, different pooling,
+> or a different normalisation convention), or if top-k membership shifts. Note
+> `vectors-<dim>` collection naming (OPERATIONS.md §4.3) means a genuine model
+> change lands in a *different* collection anyway — the hazard is specifically
+> the same-model-different-runtime case.
 
 ---
 
@@ -531,50 +784,34 @@ with the Ollama pod still running as rollback:
 5. Repeat 1–4 for the planner, then embeddings, then the reranker (§9).
 6. Only once stable under real load: delete the GPU Ollama deployments, drop
    `values.yaml` / `values-qwen32b.yaml`, remove the `ollama-gpu-pin-v100`
-   ConfigMap block from `ollama.sh` (l.113-152), and trim the GPU chat models
-   from `seed-models.sh` (`llama3.1`, `granite3.1-dense:8b`, `qwen2.5:32b`,
-   `qwen3:32b` into `ollama-llama3` / `ollama-qwen32b`).
+   ConfigMap block from `ollama.sh` (l.113-152 — **or earlier, per §2.3**), and
+   trim the GPU chat models from `seed-models.sh` (`llama3.1`,
+   `granite3.1-dense:8b`, `qwen2.5:32b`, `qwen3:32b` into `ollama-llama3` /
+   `ollama-qwen32b`). Also delete the dead `rollout status` waits on
+   `deploy/ollama-embed-0` and `deploy/ollama-planner-cpu-0`
+   (`ollama.sh:230-231`; l.172 records both as removed).
 7. Revisit §3.1 (executor at TP2) with real latency numbers in hand.
 
----
+### 10.1 Check the timeout budget before benchmarking
 
-## Phase 0 — verify the hardware first
+§1 sets the expectation at roughly half the fork's headline throughput, and
+first-token latency at 65,536 context with a cold prefix cache will be worse
+than the current Ollama setup. Several timeouts sit in that path and a breach
+looks like a stack failure rather than a slow model:
 
-Nothing above is safe to start until these are answered. `nvidia-smi` cannot run
-on Talos directly, so both go through throwaway pods.
+- **The Go E2E driver has a known failure mode here** — it returns empty answers
+  when the LLM takes longer than ~30s, which reads as a broken pipeline. Run the
+  isolated retrieval test (OPERATIONS.md §10.1.1) first to separate storage from
+  inference before concluding anything from an E2E run.
+- `REQUEST_TIMEOUT` in `llm-gateway` (Pulsar inference wait).
+- `HYDRATION_TIMEOUT` (default 5m) and `QDRANT_SEARCH_TIMEOUT` in `rag-worker`
+  (`internal/config/config.go`).
+- The `startupProbe` budget from §8.3 — ~600s covers weight load plus CUDA graph
+  capture, but confirm against the real CephFS read rate rather than assuming.
 
-```bash
-# PCI inventory — regenerates configs/GPU-Descriptor
-${TALOS_ROOT}/talosctl --talosconfig "${TALOSCONFIG}" \
-  --nodes 192.168.5.31 --endpoints "${CP_VIP}" \
-  get pcidevices -o wide | grep -i nvidia
-
-# UUIDs, memory, arch, SKU, driver, and interconnect topology
-/home/k8s/kube/kubectl run gpu-probe --restart=Never --rm -i \
-  --image=hierophant.hierocracy.home:5000/nvcr.io/nvidia/k8s-device-plugin:v0.18.1 \
-  --overrides='{"spec":{"nodeName":"inference-0"}}' \
-  --env=NVIDIA_VISIBLE_DEVICES=all \
-  --env=NVIDIA_DRIVER_CAPABILITIES=utility \
-  -- bash -c 'nvidia-smi --query-gpu=index,uuid,name,memory.total,compute_cap,driver_version,pci.bus_id --format=csv; echo; nvidia-smi -q | grep -iE "Product Name|Board|Bus Type"; echo; nvidia-smi topo -m'
-```
-
-Record:
-
-- **Are the P4s physically gone?** If still seated, the pool is *still* mixed
-  and §2 must not be applied as written.
-- **SKU** — V100 PCIe, V100S PCIe, SXM2, or SXM3. Sets the bandwidth expectation
-  in §1.
-- **NVLink or PCIe** — `NV1`/`NV2` in `topo -m` means NVLink; `PHB`/`SYS` means
-  the interconnect runs over PCIe, possibly cross-socket. Only matters if §3.1
-  is adopted, but `SYS` is worth fixing by reseating regardless.
-- **Driver version.** 1Cat-vLLM wheels target **CUDA 12.8 / PyTorch 2.10 /
-  Python 3.12**. CUDA 12.x minor-version compatibility needs **R525+**; the
-  practical floor for a 12.8 runtime is **R570** unless forward-compat libs ship
-  in the image. The driver comes from the `siderolabs/nonfree-kmod-nvidia`
-  extension baked into
-  `hierophant.hierocracy.home:5000/siderolabs/installer-gpu:v1.12.4`. **If it is
-  below the floor, a new Image Factory schematic and a node reinstall are
-  prerequisites for §6 onward** — a reboot-window item, so find out now.
+Raise these *before* step 3's benchmark, not after it produces a confusing
+result. A slow first token is a tuning problem; a timeout is a red herring that
+costs a day.
 
 ---
 
@@ -597,9 +834,9 @@ is in production, not as a target.
 ## Open questions blocking a start
 
 1. **Are the P4s physically removed?** If not, §2 is wrong as written.
-2. **Which V100 SKU, and NVLink or PCIe?** (Phase 0.) Sets throughput
+2. **Which V100 SKU, and NVLink or PCIe?** (§0.) Sets throughput
    expectations and whether §3.1 is worth pursuing.
-3. **Driver version vs the CUDA 12.8 floor.** (Phase 0.) Potential reinstall.
+3. **Driver version vs the CUDA 12.8 floor.** (§0.) Potential reinstall.
 4. **Exact HF repo ids** for the Track A executor AWQ model and the 8B planner.
 5. **Does v1.5.0 support TP2 for the QUASAR NVFP4 target,** or is TP4 a hard
    gate? (PR #445; DFlash2 PRs #426/#427.) Gates Track B only.
@@ -607,5 +844,31 @@ is in production, not as a target.
    (`OLLAMA_NUM_PARALLEL=1`, `max_num_seqs=1`). If concurrency is expected to
    rise, revisit §3.1 — at high concurrency two independent TP1 replicas beat
    one TP2 instance.
-7. **Do GPU embeddings reproduce the CPU vectors bit-for-bit?** (§9 step 3.)
-   Determines whether the Qdrant collection needs re-ingestion.
+7. **Are GPU embeddings equivalent to the CPU vectors within tolerance?**
+   (§9 step 3 — cosine ≥ 0.9999 and unchanged top-k membership, *not* bit
+   equality, which will never hold.) Determines whether the Qdrant collection
+   needs re-ingestion.
+8. **Which §2.3 resolution?** Approach 1 (bring the `ollama.sh` pinning removal
+   forward, so Ollama requests `nvidia.com/gpu: 1` properly) or Approach 2 (keep
+   `gpu-v100-uuid` until §10 finishes). Approach 1 is preferred and also makes
+   Ollama and vLLM safely co-resident. **Answer before starting §2** — it
+   changes what §2.2 does.
+9. **One image or two?** (§6.) The `gpu-small-models` container needs only
+   `torch` + `sentence-transformers` for the reranker and embedding servers, but
+   its planner process needs the vLLM wheel. One combined image is simpler to
+   maintain; two are smaller and decouple rebuilds.
+
+---
+
+## Open items deliberately left unresolved
+
+These are judgement calls that want measurements, not more analysis. Listed so
+they are not mistaken for oversights:
+
+- **TP1 vs TP2 for the executor** (§3.1) — decide from §10's latency numbers.
+- **Track B** (NVFP4 + DFlash2 drafter, §5) — attempt only after Track A serves.
+- **Appendix A** (122B MoE with expert offload) — experiment, not a target.
+- **`marlin` vs `turbomind`** for `VLLM_SM70_QUANT_BACKEND` (§8.3) — the fork
+  exposes both and declares no winner; benchmark on this hardware.
+- **§4 Option A vs B vs C** for card 1 — start at A, escalate only if
+  independent restart or scaling becomes a real requirement.
