@@ -294,10 +294,13 @@ consumed by ordinary requests.
 | | Card 0 — `vllm-executor` | Card 1 — `gpu-small-models` |
 |---|---|---|
 | Request | `nvidia.com/gpu: 1` | `nvidia.com/gpu: 1` |
-| Contents | 32B AWQ, TP1 | 3 processes in **one container** |
+| Contents | 32B AWQ, TP1 | 2 processes in **one container** |
 | | | · planner 8B AWQ (vLLM, :8001) |
 | | | · reranker BGE-reranker-v2-m3 (:8002) |
-| | | · embeddings — all-minilm / nomic / mxbai (:8003) |
+
+**Embeddings stay on CPU.** An earlier draft placed them on card 1 as a third
+process on :8003. That was wrong — see §9.1. They remain on the
+`ollama-embed-2..9` worker pods.
 
 VRAM budget (Track A / AWQ figures — NVFP4 shifts these):
 
@@ -306,12 +309,12 @@ VRAM budget (Track A / AWQ figures — NVFP4 shifts these):
 | 32B AWQ weights | ~18 | | planner 8B AWQ weights | ~5 |
 | KV @ `fp8_e5m2`, 57,344 ctx | ~7 | | planner KV, 16,384 ctx | ~2 |
 | activations + CUDA graphs | ~3 | | reranker (568M, fp16) | ~1.5 |
-| | | | embeddings (3 models, fp16) | ~1.5 |
-| | | | 3× CUDA context overhead | ~1.5 |
-| **total** | **~28 / 32** | | **total** | **~11.5 / 32** |
+| | | | 2× CUDA context overhead | ~1 |
+| **total** | **~28 / 32** | | **total** | **~9.5 / 32** |
 
-Card 1's ~20 GB of headroom is deliberate — it is where a larger planner, a
-second embedding replica, or a draft model goes later.
+Card 1's ~22 GB of headroom is deliberate — it is where a larger planner, a
+draft model, or (if §9.1's preconditions are ever met) a **batched** embedding
+endpoint goes later.
 
 > **These totals must agree with `--gpu-memory-utilization`, and the earlier
 > draft's did not.** vLLM does not accept a KV size; it *derives* KV from
@@ -333,20 +336,25 @@ second embedding replica, or a draft model goes later.
 > pair and keep both places in sync. Re-run this arithmetic whenever the weight
 > figure changes — an NVFP4 target at ~20.6 GB moves every row.
 
-**Why one container with three processes.** Containers in a pod cannot share a
+**Why one container with two processes.** Containers in a pod cannot share a
 GPU device allocation (`nvidia.com/gpu: 1` is granted to one container), but
-processes inside one container can. These three models are small and
-low-duty-cycle, so plain CUDA context switching is adequate and this needs
-**zero** device-plugin changes. §4 covers splitting them into separate pods
-later if independent scaling or restart becomes worth the machinery.
+processes inside one container can. Plain CUDA context switching is adequate
+here and needs **zero** device-plugin changes. §4 covers splitting them into
+separate pods later if independent scaling or restart becomes worth the
+machinery.
+
+Note both of these run **per request** — the planner on every query, the
+reranker on every query that retrieves. An earlier draft called card 1's tenants
+"low-duty-cycle"; that is not true of either, and was one of the reasons
+embeddings looked cheap to add there. Two per-request models on one V100 is
+already worth measuring (§10.2) before adding a third.
 
 **What this buys over the single-model draft:**
 
 - Planner and executor stop contending for one card — the current documented pain.
-- ~8 embed pods' worth of worker CPU comes back (`all-minilm:l6-v2` is 22M
-  params, `nomic-embed-text` 137M, `mxbai-embed-large` 335M; a V100 serves all
-  three from ~1.5 GB).
-- The stack gains a reranker, for ~1.5 GB.
+- The stack gains a reranker, for ~1.5 GB. This is the largest
+  retrieval-quality gain per GB available anywhere in the plan.
+- Card 1 keeps ~22 GB free for a larger planner or a draft model.
 - No tensor parallelism at all: no all-reduce, no NVLink dependency, and none of
   the fork's TP2 operator fallbacks (§5).
 
@@ -533,8 +541,7 @@ PY
 `torch.cuda.get_arch_list()` must contain `sm_70`.
 
 The `gpu-small-models` container is a **separate, smaller image**: the reranker
-and embedding servers need only `torch` + `sentence-transformers`, not the vLLM
-wheel. Build the planner's vLLM process from the image above, or accept one
+needs only `torch` + `sentence-transformers`, not the vLLM wheel. Build the planner's vLLM process from the image above, or accept one
 combined image to avoid maintaining two — decide when writing it.
 
 Publish both the way this cluster already does images: build with podman on
@@ -610,9 +617,10 @@ executor model's weights change, recompute before changing anything else.
 
 ### 8.2 `gpu-small-models` — card 1
 
-One container, three processes under a supervisor: planner vLLM on :8001
-(`--gpu-memory-utilization 0.28`, `--max-model-len 16384`), reranker on :8002,
-embeddings on :8003. Three Services so callers address them independently.
+One container, two processes under a supervisor: planner vLLM on :8001
+(`--gpu-memory-utilization 0.28`, `--max-model-len 16384`) and the reranker on
+:8002. Two Services so callers address them independently. **Embeddings are not
+here** — they stay on the CPU worker pods (§9.1).
 
 **On `0.28`:** utilization is a fraction of the card's *total* memory, not of
 what is free, so the planner's budget must cover its own weights. `0.12` × 32 GB
@@ -625,17 +633,15 @@ budgets must be set by convention** — nothing enforces it. Write the §3 budge
 into the manifest as a comment.
 
 **Start the planner first.** vLLM profiles free VRAM during initialisation to
-size its KV cache. If the reranker and embedding servers are already resident it
-still fits at `0.28`, but the ordering makes the profile deterministic and keeps
-a later utilization bump from silently colliding with them. A supervisor that
-starts :8001, waits for `/health`, then starts :8002 and :8003 is worth the few
-extra lines.
+size its KV cache. If the reranker is already resident it still fits at `0.28`,
+but the ordering makes the profile deterministic and keeps a later utilization
+bump from silently colliding with it. A supervisor that starts :8001, waits for
+`/health`, then starts :8002 is worth the few extra lines.
 
-**Probes need care: one pod, three ports.** A Kubernetes readiness probe targets
-a single port, so probing only :8001 leaves the pod `Ready` while the reranker
-or embedding server is dead. Either expose one aggregate health endpoint that
-checks all three locally and probe that, or accept the blind spot **explicitly**
-in the manifest comment. Do not leave it implicit — a silently dead reranker
+**Probes need care: one pod, two ports.** A Kubernetes readiness probe targets a
+single port, so probing only :8001 leaves the pod `Ready` while the reranker is
+dead. Either expose one aggregate health endpoint that checks both locally and
+probe that, or accept the blind spot **explicitly** in the manifest comment. Do not leave it implicit — a silently dead reranker
 degrades retrieval quality without failing anything, which is the hardest class
 of fault to notice. (Compare `rag-admin-api`'s `/api/health/all`, which
 aggregates downstream service health the same way — OPERATIONS.md §5.3.)
@@ -743,16 +749,58 @@ with the Ollama pod still running as rollback:
 
 1. Executor → `vllm-executor`. Biggest win, smallest change.
 2. Planner → `gpu-small-models`. Frees the last GPU Ollama pod.
-3. Embeddings → `gpu-small-models`. Retires `ollama-embed-2..9` and returns
-   worker CPU. Verify vector *equivalence* against the CPU path before
-   repointing `rag-ingestion` — see the hazard note below.
-4. Reranker — new, flagged off, enabled after A/B.
+3. Reranker — new, flagged off, enabled after A/B.
 
-> ⚠ **Step 3 is the one with a data hazard, and the bar is not bit-equality.**
-> GPU and CPU inference of the same model will differ in the low-order bits —
-> different kernels, different accumulation order, possibly fp16 vs fp32. That is
-> expected and harmless. Testing for identical vectors will always "fail" and
-> would wrongly condemn the collection to re-ingestion.
+**Embeddings are NOT in the migration order.** They stay on the CPU worker pods.
+See §9.1.
+
+### 9.1 Embeddings stay on CPU — the batching precondition
+
+An earlier draft of this plan moved embeddings to card 1 as step 3, and counted
+"~8 embed pods' worth of worker CPU comes back" as a benefit. **That reasoning
+was backwards on this cluster**, for one decisive reason:
+
+> **Nothing in the embedding path batches.** `rag-ingestion/service.py:212` is
+> `get_ollama_embeddings_with_retry(text: str, ...)` sending `"prompt": text` —
+> one text per HTTP request. The Go side is `GetEmbeddings(text string)`
+> (`rag-worker/internal/models/interfaces.go:12`), called in a per-sub-query loop
+> in `pkg/pipeline/search.go`. `INGEST_BATCH_SIZE=20` is the **Qdrant upsert**
+> batch, not an embedding batch.
+
+GPU embedding wins almost entirely through batching. At batch=1 you pay a kernel
+launch and a host↔device round trip per item while the GPU idles between
+requests. `all-minilm:l6-v2` is 22M parameters — a single forward pass that CPU
+SIMD handles well. So on the current code path a GPU endpoint is expected to be
+**no faster end-to-end, possibly slower**, while consuming VRAM and SM time that
+card 1 needs for the planner and reranker, both of which run per request (§3).
+
+The scarcity is also the wrong way round. Worker CPU is comparatively free — and
+`worker-3` in particular has capacity the rest of the stack is not using
+(`complete-build` OPERATIONS.md §1.10). GPU is the contended resource. Freeing
+CPU by spending GPU is a bad trade here.
+
+**Preconditions to revisit. All of them, not any of them:**
+
+1. **A batched embedding interface exists on both sides** — `GetEmbeddings([]string)`
+   in Go and a list-valued `input` in Python. Without this, nothing downstream
+   can present the GPU with a batch and the rest is moot.
+2. **A measured CPU baseline exists** (§10.2) showing embeddings are actually a
+   bottleneck. "The GPU is idle" is not a reason; a p95 that misses a target is.
+3. **The batched GPU path beats batched CPU by a margin worth the VRAM** — and is
+   compared against *card 1 under realistic planner + reranker load*, not against
+   an otherwise-idle card.
+4. **Vector equivalence is confirmed** before repointing `rag-ingestion` (below).
+
+If those hold, the natural shape is **split by workload, not by model**: a
+batched GPU endpoint used only by `rag-ingestion` for bulk work, with the query
+path staying on CPU where batch=1 is inherent. One model, two endpoints, chosen
+by caller.
+
+> ⚠ **If embeddings are ever moved, the data hazard applies — and the bar is not
+> bit-equality.** GPU and CPU inference of the same model differ in the low-order
+> bits: different kernels, different accumulation order, possibly fp16 vs fp32.
+> That is expected and harmless. Testing for identical vectors will always
+> "fail" and would wrongly condemn the collection to re-ingestion.
 >
 > The right test is **cosine similarity against a sample of existing collection
 > entries**, re-embedded on the GPU path: expect ≥ 0.9999 for the same model and
@@ -815,6 +863,144 @@ costs a day.
 
 ---
 
+### 10.2 Timing tests to run once the node is up
+
+**Every test here exists to answer a specific open question.** Numbers gathered
+without a decision attached get quoted later as if they meant something. Record
+raw output in `/tmp/rag-logs/` on hierophant alongside the date, image tag and
+model id — a tok/s figure with no provenance is unusable in three weeks.
+
+| # | Test | Answers | Can run before the node? |
+|---|---|---|---|
+| T1 | CPU embedding baseline | §9.1 precondition 2 — are embeddings even a bottleneck? | **yes, run now** |
+| T2 | GPU embedding at batch=1 | §9.1 precondition 3, cheap half | no |
+| T3 | Executor decode + TTFT vs Ollama | §10 step 3 — is vLLM actually better? | baseline half, yes |
+| T4 | TP1 vs TP2 | §3.1 — worth the scheduling conflict? | no |
+| T5 | Card 1 contention | §3 — do planner and reranker fit one card? | no |
+| T6 | `marlin` vs `turbomind` | §8.3 — the fork declares no winner | no |
+| T7 | Weight load from CephFS | §8.3 — is the 600s `startupProbe` right? | no |
+
+#### T1 — CPU embedding baseline (run this now, it is the control)
+
+The most useful measurement available before any hardware arrives, and the one
+that decides §9.1. Run **on hierophant**, in an interactive session — this is
+deliberately a script rather than a one-liner, because nesting `ssh` → `kubectl`
+→ `sh -c` → `curl` → JSON needs five levels of quote escaping and will not
+survive a copy-paste.
+
+```bash
+# On hierophant. Writes results to /tmp/rag-logs/embed-baseline-$(date +%F).txt
+export KUBECONFIG=/home/k8s/kube/config/kubeconfig
+KUBECTL=/home/k8s/kube/kubectl
+OUT=/tmp/rag-logs/embed-baseline-$(date +%F).txt
+mkdir -p /tmp/rag-logs
+
+cat > /tmp/embed-bench.sh <<'SCRIPT'
+#!/bin/sh
+# ~1500-char payload, roughly one CHUNK_SIZE of prose
+PROMPT=$(yes "the quick brown fox jumps over the lazy dog " | head -c 1500 | tr -d '\n')
+URL=http://ollama-embed.llms-ollama.svc.cluster.local:11434/api/embeddings
+for m in all-minilm:l6-v2 nomic-embed-text mxbai-embed-large; do
+  for n in $(seq 1 20); do
+    printf '{"model":"%s","prompt":"%s"}' "$m" "$PROMPT" > /tmp/body.json
+    t=$(curl -s -o /dev/null -w '%{time_total}' "$URL" \
+          -H 'Content-Type: application/json' --data @/tmp/body.json)
+    echo "$m $t"
+  done
+done
+SCRIPT
+
+# The local shell expands $(cat ...) into ONE argv element, so the script text
+# never passes through a second layer of quoting. This is why it works where a
+# nested one-liner does not.
+$KUBECTL -n llms-ollama run embed-bench --rm -i --restart=Never \
+  --image=registry.container-registry.svc.cluster.local:5000/curlimages/curl \
+  --overrides='{"spec":{"nodeSelector":{"role":"storage-node"}}}' \
+  --command -- sh -c "$(cat /tmp/embed-bench.sh)" | tee "$OUT"
+
+# p50 / p95 per model
+awk '{a[$1]=a[$1]" "$2} END {for (m in a) {n=split(a[m],v," "); asort(v);
+  printf "%-22s p50=%.3fs p95=%.3fs n=%d\n", m, v[int(n*0.5)+1], v[int(n*0.95)], n}}' "$OUT"
+```
+
+If `awk` lacks `asort` (mawk), pipe per-model values through `sort -n` instead.
+
+Record, per model:
+
+- **p50 / p95 single-text latency** at a realistic chunk size (~1500 chars, i.e.
+  roughly `CHUNK_SIZE`), not a three-word string. Short inputs flatter CPU.
+- **Throughput under concurrency** — the fan-out is 8 pods, so drive 8, 16 and 32
+  concurrent requests and find where latency knees.
+- **Ingestion-path throughput in chunks/sec**, measured end to end on a real
+  file rather than synthesised — that is the number that matters for bulk work.
+- **Query-path contribution**: sub-queries per request × p95, as a fraction of
+  total request latency. If embedding is 2% of a RAG request, the whole GPU
+  question is closed regardless of what T2 says.
+
+**Decision rule:** if embedding is a small fraction of query latency *and*
+ingestion throughput is acceptable, §9.1 stays closed and T2 is not worth
+running.
+
+#### T2 — GPU embedding at batch=1
+
+Only if T1 shows a real bottleneck. Measure the *same* models on card 1 via a
+throwaway pod, at batch=1, **and** with the planner and reranker under load —
+comparing against an idle card is the mistake that makes GPU look good. Expect
+GPU to lose or draw at batch=1; the point is to quantify by how much, and to
+size what batching would have to buy to be worth the interface change.
+
+#### T3 — Executor: Ollama baseline vs vLLM TP1
+
+Capture the baseline **before** touching anything, since `ollama-qwen32b` gets
+scaled to 0 during cutover (§10 step 1):
+
+- **Decode tok/s**, sustained, at a fixed output length.
+- **Time to first token** at ~1k, ~16k and ~65k prompt tokens. TTFT at long
+  context is the number that breaks §10.1's timeouts, and it is the one most
+  likely to regress.
+- **Cold vs warm prefix cache** — RAG requests share long system and
+  retrieved-context prefixes, so `--enable-prefix-caching` should show a large
+  gap. If it does not, prefix caching is not working and §3.2's main
+  justification for the 128 GB of host RAM is unproven.
+- Same prompts, same output lengths, both engines. Do not compare a vLLM run
+  against a remembered Ollama number.
+
+**Expectation to hold yourself to:** §1 predicts roughly half the fork's headline
+throughput, and that headline was a 4-card figure. A TP1-on-one-card result in
+that region is a success, not a disappointment.
+
+#### T4 — TP1 vs TP2
+
+Only after Track A serves. §3.1's claim is that TP2 halves per-card weight bytes
+read per token and so is worth up to ~2× on bandwidth-bound decode, minus
+all-reduce. Measure decode tok/s and TTFT both ways at the same context length.
+Fold in §0's NVLink-vs-PCIe finding when interpreting: `SYS` in `nvidia-smi
+topo -m` means the all-reduce crosses sockets and the ceiling is much lower.
+
+Remember TP2 consumes both cards, so this test requires taking card 1 down —
+schedule it, do not stumble into it.
+
+#### T5 — Card 1 contention
+
+Two per-request models sharing one V100 by CUDA context switching (§3). Measure
+planner p95 alone, reranker p95 alone, then both under concurrent load. If
+either degrades badly, that is the trigger for §4 Option B or C — and the
+evidence needed to justify the machinery.
+
+#### T6 — `marlin` vs `turbomind`
+
+`VLLM_SM70_QUANT_BACKEND` accepts both and the fork picks no winner. Same
+prompts, same output length, decode tok/s each way. Cheap to run, one env var,
+and worth doing once rather than guessing forever.
+
+#### T7 — Weight load from CephFS
+
+Time from container start to the first successful `/health`, for the ~18 GB
+executor. This validates or corrects §8.3's ~600s `startupProbe` budget. Measure
+twice — the second run benefits from host page cache (§3.2), so the **cold**
+number is the one the probe must survive. A pod that restarts during a CephFS
+degradation gets the cold path.
+
 ## Appendix A — the ambitious swing
 
 The fork lists **Qwen3.5-122B-A10B-AWQ** (their profile: TP4, 256K context). At
@@ -844,19 +1030,20 @@ is in production, not as a target.
    (`OLLAMA_NUM_PARALLEL=1`, `max_num_seqs=1`). If concurrency is expected to
    rise, revisit §3.1 — at high concurrency two independent TP1 replicas beat
    one TP2 instance.
-7. **Are GPU embeddings equivalent to the CPU vectors within tolerance?**
-   (§9 step 3 — cosine ≥ 0.9999 and unchanged top-k membership, *not* bit
-   equality, which will never hold.) Determines whether the Qdrant collection
-   needs re-ingestion.
+7. ~~Are GPU embeddings equivalent to the CPU vectors?~~ **CLOSED 2026-09-07 —
+   embeddings stay on CPU** (§9.1). Nothing in the embedding path batches, so a
+   GPU endpoint would be no faster and possibly slower while spending VRAM and
+   SM time card 1 needs. The equivalence question only reopens if §9.1's four
+   preconditions are met.
 8. **Which §2.3 resolution?** Approach 1 (bring the `ollama.sh` pinning removal
    forward, so Ollama requests `nvidia.com/gpu: 1` properly) or Approach 2 (keep
    `gpu-v100-uuid` until §10 finishes). Approach 1 is preferred and also makes
    Ollama and vLLM safely co-resident. **Answer before starting §2** — it
    changes what §2.2 does.
 9. **One image or two?** (§6.) The `gpu-small-models` container needs only
-   `torch` + `sentence-transformers` for the reranker and embedding servers, but
-   its planner process needs the vLLM wheel. One combined image is simpler to
-   maintain; two are smaller and decouple rebuilds.
+   `torch` + `sentence-transformers` for the reranker, but its planner process
+   needs the vLLM wheel. One combined image is simpler to maintain; two are
+   smaller and decouple rebuilds.
 
 ---
 
@@ -870,5 +1057,9 @@ they are not mistaken for oversights:
 - **Appendix A** (122B MoE with expert offload) — experiment, not a target.
 - **`marlin` vs `turbomind`** for `VLLM_SM70_QUANT_BACKEND` (§8.3) — the fork
   exposes both and declares no winner; benchmark on this hardware.
-- **§4 Option A vs B vs C** for card 1 — start at A, escalate only if
-  independent restart or scaling becomes a real requirement.
+- **§4 Option A vs B vs C** for card 1 — start at A, escalate only if T5 shows
+  planner/reranker contention, or independent restart becomes a real requirement.
+- **Whether embeddings ever move to GPU** (§9.1) — closed for now; reopening
+  needs a batched interface on both sides *and* T1 showing embeddings are
+  actually a bottleneck. Run **T1 now**: it is the only test in §10.2 that does
+  not need the new node, and it is the control for everything else.
