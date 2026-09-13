@@ -4,19 +4,27 @@
 > from this repo. `52-install-gpu-operator.sh` and `55-label-gpu-nodes.sh` were
 > **deleted**; their logic now lives in
 > **`complete-build/infrastructure/nvidia-operator.sh`**, which runs automatically
-> as Step 1.9 of `setup-complete.sh` — before the RAG stack, because it publishes
-> the `gpu=true` and `hierocracy.home/gpu-*-uuid` node labels that Ollama pins
-> against.
+> as Step 1.9 of `setup-complete.sh` — before the RAG stack, because it installs
+> the device plugin that advertises `nvidia.com/gpu`. GPU workloads request that
+> resource, so deploying the RAG stack first leaves them `Pending`.
 >
 > The split is: **this repo owns Talos-level node provisioning** (machine config,
 > kernel modules, driver extensions, enrolment); **complete-build owns every
 > Kubernetes object** (operator Helm release, RuntimeClass, device-plugin
 > ConfigMap, validation-fix DaemonSet, GPU node labels).
 >
-> The analysis below — heterogeneous GPU handling, the two approaches that failed,
-> the Talos validator layout — is still accurate and is why the operator is
-> configured the way it is. Only the script names have moved. Where the text says
-> `52-install-gpu-operator.sh`, read `complete-build/infrastructure/nvidia-operator.sh`.
+> Where any text below says `52-install-gpu-operator.sh`, read
+> `complete-build/infrastructure/nvidia-operator.sh`.
+
+> **Hardware change (2026-09-13).** The 2x Tesla P4 8GB cards were removed and a
+> second V100 32GB added. `inference-0` is now a **uniform two-card V100 32GB
+> node**, workloads request `nvidia.com/gpu: 1` normally, and the per-card UUID
+> pinning this guide used to document is **retired** — the labels are gone and
+> `nvidia-operator.sh` actively unsets them.
+>
+> The mixed-pool analysis, including the two approaches that failed, is preserved
+> verbatim in **Appendix A** because its three core findings are still true. Read
+> it before reintroducing UUID pinning or adding a non-matching card.
 
 This document covers the steps specific to enrolling the physical GPU inference node
 into the `new-setup-external-gpu` cluster. The base cluster (control-plane + workers)
@@ -351,7 +359,212 @@ To re-apply on an already-enrolled node without re-running enrollment:
   --mode=reboot
 ```
 
-### Heterogeneous GPUs — a mixed, untyped pool
+### GPU pool — two identical V100 32GB cards
+
+**Verified on the live node 2026-09-13.** `inference-0` holds two identical GPUs:
+
+| idx | UUID | Reported name | Memory | Compute | PCI |
+|---|---|---|---|---|---|
+| 0 | `GPU-ce06ba79-…47c6ecb` | `GV100GL [Tesla PG500-216]` | 32768 MiB | `7.0` | `05:00.0` |
+| 1 | `GPU-1b623f18-…f03761e5` | `GV100GL [Tesla PG500-216]` | 32768 MiB | `7.0` | `81:00.0` |
+
+Driver `580.126.16`. The **2x Tesla P4 8GB cards have been physically removed**,
+and with them the entire heterogeneous workaround this guide used to document.
+That material is preserved in
+[Appendix A — Historical: the mixed V100+P4 pool (through 2026-09)](#appendix-a--historical-the-mixed-v100p4-pool-through-2026-09);
+read it before reintroducing any of it.
+
+> **`Tesla PG500-216` is a board code, not a marketing name.** The driver falls
+> back to it when it has no SKU string, which is why `nvidia-smi` never prints
+> "V100" on this node. **Do not match on the name** — classify on memory and
+> compute capability. `nvidia-operator.sh` does exactly that, and the node label
+> it publishes is deliberately called `gpu-32gb-count` rather than
+> `gpu-v100-count` for the same reason.
+
+Because the pool is uniform, `nvidia.com/gpu` is now an honest, fungible
+resource: `allocatable` is 2 and the scheduler cannot hand a workload the "wrong"
+card. GFD's `nvidia.com/gpu.*` labels should also be truthful again — but
+**record them, do not gate on them**; they were observed lying on this node while
+the pool was mixed (Appendix A).
+
+#### Interconnect: `SYS`, no NVLink
+
+`nvidia-smi topo -m`, same probe:
+
+```text
+        GPU0  GPU1  CPU Affinity   NUMA Affinity
+GPU0     X    SYS   0-11,24-35     0
+GPU1    SYS    X    12-23,36-47    1
+```
+
+`SYS` means the path between the cards traverses PCIe **and** the cross-socket
+interconnect (QPI/UPI) — the two cards sit on different NUMA nodes. There is no
+NVLink. This shapes what is worth running:
+
+- **One card per pod is the right topology.** It is what the RAG stack uses.
+- **Tensor parallelism is penalised here.** A TP job all-reduces activations
+  every layer across that link. Avoid it on this hardware.
+- **Layer-split across both cards is fine.** llama.cpp/Ollama's default split
+  mode passes activations across the boundary once per split point — a small
+  transfer that this link handles comfortably. This is the supported route to a
+  model larger than 32 GB: give one pod `nvidia.com/gpu: 2` and set
+  `OLLAMA_SCHED_SPREAD=1`. Nothing does this today.
+
+`SYS` rather than `NODE`/`PHB` is also worth a glance at the physical build — if
+both cards can be moved onto host bridges under one socket, do it during a
+maintenance window.
+
+### Requesting a GPU
+
+Request it the ordinary way. **Do not pin cards by UUID** (see Appendix A for
+what that was and why it is gone):
+
+```yaml
+resources:
+  limits:
+    nvidia.com/gpu: 1
+runtimeClassName: nvidia
+nodeSelector:
+  role: inference-node
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+```
+
+Four things all have to be right, and three of them fail silently:
+
+| Item | Why |
+|---|---|
+| `nvidia.com/gpu` in **`limits`** | It is an *extended resource*: Kubernetes copies the limit into `requests`, and the two may not differ. Setting only `requests` is invalid. |
+| `runtimeClassName: nvidia` | Selects the NVIDIA container runtime, which maps the device and driver libraries in. Talos sets containerd's `default_runtime_name=nvidia` too, but naming it is explicit and survives that changing. |
+| `nodeSelector: role=inference-node` | Expresses intent. |
+| the **toleration** | `inference-0` is tainted `nvidia.com/gpu=present:NoSchedule` by `complete-build/scripts/setup-node-labels.sh`. Without a toleration the pod is simply never scheduled there. |
+
+There are **no `hierocracy.home/gpu-*-uuid` labels** to read.
+`nvidia-operator.sh` actively unsets them, because dropping a label from a script
+does not remove it from a live Node.
+
+### GPU smoke test
+
+`nvidia-smi` cannot be run directly on Talos, so probe through a throwaway pod.
+
+**Run it in a namespace that permits privileged pods.** The `default` namespace
+is admitted at PodSecurity `baseline` on this cluster, which rejects
+`privileged`, `hostPID` and `hostPath` — `kube-system` or `gpu-operator` work.
+(This exact mistake sat undetected in `nvidia-operator.sh`'s own probe until
+2026-09-13: it omitted `-n`, so discovery had never once succeeded and the script
+silently used hardcoded fallbacks.)
+
+```bash
+# Inventory: expect TWO rows, 32768 MiB and compute_cap 7.0 on both
+/home/k8s/kube/kubectl run gpu-probe -n kube-system --rm -i --restart=Never \
+  --image=hierophant.hierocracy.home:5000/busybox:1.36 \
+  --overrides='{"spec":{"nodeName":"inference-0","hostPID":true,
+    "tolerations":[{"operator":"Exists"}],
+    "containers":[{"name":"p","image":"hierophant.hierocracy.home:5000/busybox:1.36",
+      "command":["chroot","/host","/usr/local/bin/nvidia-smi",
+        "--query-gpu=index,uuid,name,memory.total,compute_cap,driver_version,pci.bus_id",
+        "--format=csv"],
+      "securityContext":{"privileged":true},
+      "volumeMounts":[{"name":"h","mountPath":"/host"}]}],
+    "volumes":[{"name":"h","hostPath":{"path":"/"}}]}}'
+```
+
+```bash
+# Interconnect
+/home/k8s/kube/kubectl run gpu-topo -n kube-system --rm -i --restart=Never \
+  --image=hierophant.hierocracy.home:5000/busybox:1.36 \
+  --overrides='{"spec":{"nodeName":"inference-0","hostPID":true,
+    "tolerations":[{"operator":"Exists"}],
+    "containers":[{"name":"p","image":"hierophant.hierocracy.home:5000/busybox:1.36",
+      "command":["chroot","/host","/usr/local/bin/nvidia-smi","topo","-m"],
+      "securityContext":{"privileged":true},
+      "volumeMounts":[{"name":"h","mountPath":"/host"}]}],
+    "volumes":[{"name":"h","hostPath":{"path":"/"}}]}}'
+```
+
+Then check what Kubernetes believes:
+
+```bash
+# Expect 2
+/home/k8s/kube/kubectl get node inference-0 \
+  -o jsonpath='{.status.allocatable.nvidia\.com/gpu}{"\n"}'
+
+# Expect gpu-total-count=2, gpu-32gb-count=2, gpu-inventory-rev=2,
+# and NO gpu-p4-* / gpu-heterogeneous / gpu-pool-mixed / gpu-*-uuid labels
+/home/k8s/kube/kubectl get node inference-0 -o json | python3 -c '
+import json,sys
+l = json.load(sys.stdin)["metadata"]["labels"]
+for k in sorted(l):
+    if "gpu" in k.lower(): print(f"{k}={l[k]}")'
+```
+
+**If `allocatable` reads 0 while the device-plugin pods are `Running`**, suspect
+an empty `sharing: timeSlicing: {}` block in the device-plugin ConfigMap — it
+fails config parsing with "no resources specified" and the plugin refuses to
+start. See `complete-build/infrastructure/nvidia-operator.sh`.
+### RuntimeClass `nvidia`
+
+`toolkit.enabled=false` on Talos (the runtime comes from the
+`nvidia-container-toolkit` system extension), which means the GPU operator never
+creates the `nvidia` RuntimeClass it normally would. Since the values set
+`devicePlugin.runtimeClassName: nvidia`, and a pod naming a missing RuntimeClass
+is rejected outright, `complete-build/infrastructure/nvidia-operator.sh` creates it explicitly.
+
+### Node `role` labels
+
+`complete-build/infrastructure/nvidia-operator.sh` pins the operator controller and the
+node-feature-discovery master to `role=storage-node`, and the NFD worker to
+`role=inference-node`. These come from Talos `machine.nodeLabels`:
+
+| Label | Set in |
+|---|---|
+| `role=storage-node` | `configs/patch-worker-0..3.yaml` |
+| `role=inference-node` | `configs/patch-inference-0.yaml` |
+
+`complete-build/scripts/setup-node-labels.sh` applies them with `kubectl`, so
+clusters built before those patches existed still work. Without the labels the
+Helm install hangs on Pending pods until it times out.
+
+---
+
+## Appendix A — Historical: the mixed V100+P4 pool (through 2026-09)
+
+> **ARCHIVED 2026-09-13. None of this describes the current cluster.**
+>
+> `inference-0` ran 1x Tesla V100 32GB (`sm_70`) + 2x Tesla P4 8GB (`sm_61`) as a
+> single untyped `nvidia.com/gpu` pool of 3. Because a plain resource request
+> could hand a 32B model an 8 GB card, workloads pinned a specific card by UUID
+> via `NVIDIA_VISIBLE_DEVICES` and deliberately requested **no** resource —
+> which bypassed scheduler accounting entirely.
+>
+> **The P4s were physically removed and replaced by a second V100 32GB.** The
+> pool is uniform, ordinary `nvidia.com/gpu: 1` requests are correct, and the
+> UUID labels are gone and actively unset. The serving stack stayed on Ollama
+> (see `complete-build/documentation/OPERATIONS.md` §4.4.2).
+>
+> **This is kept, not deleted, for three findings that remain true and are each
+> worth a day of rediscovery:**
+>
+> 1. **`NVIDIA_VISIBLE_DEVICES` cannot restrict the operator's own DaemonSets.**
+>    They run privileged and NVML enumerates every device regardless.
+> 2. **The device plugin's named `resources:` field is unimplemented** (v0.19.3
+>    logs `Customizing the 'resources' field is not yet supported in the config.
+>    Ignoring...`). Per-product resource names are therefore impossible; a mixed
+>    pool *cannot* be split above the plugin.
+> 3. **GFD models a mixed node as one product/memory/compute triple** and will
+>    describe all cards with whichever it picks — observed reporting
+>    `Tesla-P4 / 7680 MiB / 6.1` and hiding the V100 even with
+>    `MIG_STRATEGY=none` correctly set. This is why `nvidia.com/gpu.*` labels
+>    are still treated as *recorded, not authoritative* on this node.
+>
+> If a non-uniform card is ever added back, start here — and note that
+> `nvidia-operator.sh` warns loudly when `gpu-32gb-count` differs from
+> `gpu-total-count`, which is the signal that this appendix has become relevant
+> again.
+
+### Historical: heterogeneous GPUs — a mixed, untyped pool
 
 `inference-0` holds three GPUs of two different models:
 
@@ -414,7 +627,7 @@ hierocracy.home/gpu-pool-mixed=true            # nvidia.com/gpu is NOT uniform
 hierocracy.home/gpu-labels-describe=tesla-v100-32gb
 ```
 
-#### If you do want a V100-only pool
+#### Historical: if you do want a V100-only pool
 
 The restriction has to happen below the device plugin, by keeping the NVIDIA
 driver from claiming the P4s at all. Both P4s share PCI ID `10de:1bb3`, which the
@@ -435,7 +648,7 @@ Applied with `--mode=reboot`, NVML would then see only the V100 and
 > a maintenance window, not in place. The alternative is to leave the pool mixed
 > and schedule defensively using the labels above.
 
-### Targeting a specific GPU (the model this node uses)
+### Historical: targeting a specific GPU by UUID
 
 Workloads on `inference-0` **pin a card by UUID** rather than requesting
 `nvidia.com/gpu`. This is verified working: an unprivileged pod that sets
@@ -501,7 +714,7 @@ Inside the container GPUs are renumbered `0..N-1` in the order listed, so
 > This deletes `nvidia.com/gpu` from the node. DCGM metrics, GFD labels and the
 > driver are unaffected.
 
-#### Which card for which job
+#### Historical: which card for which job
 
 | | V100 32GB (`sm_70`) | Tesla P4 8GB (`sm_61`) |
 |---|---|---|
@@ -519,7 +732,7 @@ python -c "import torch; print(torch.cuda.get_arch_list())"
 If `sm_61` is missing, PyTorch either JITs from PTX (slow first run) or fails.
 The V100's `sm_70` is safe across current builds.
 
-### GPU smoke test
+### Historical: GPU smoke test (mixed pool)
 
 `nvidia/cuda:12.3.1-base-ubuntu22.04` is seeded in the bootstrap registry for
 this. Requesting `nvidia.com/gpu: 1` gives you **whichever** of the three the
@@ -555,26 +768,3 @@ on Talos, so this goes through a throwaway pod):
   --env=NVIDIA_DRIVER_CAPABILITIES=utility \
   -- nvidia-smi --query-gpu=index,uuid,name,memory.total,pci.bus_id --format=csv
 ```
-
-### RuntimeClass `nvidia`
-
-`toolkit.enabled=false` on Talos (the runtime comes from the
-`nvidia-container-toolkit` system extension), which means the GPU operator never
-creates the `nvidia` RuntimeClass it normally would. Since the values set
-`devicePlugin.runtimeClassName: nvidia`, and a pod naming a missing RuntimeClass
-is rejected outright, `complete-build/infrastructure/nvidia-operator.sh` creates it explicitly.
-
-### Node `role` labels
-
-`complete-build/infrastructure/nvidia-operator.sh` pins the operator controller and the
-node-feature-discovery master to `role=storage-node`, and the NFD worker to
-`role=inference-node`. These come from Talos `machine.nodeLabels`:
-
-| Label | Set in |
-|---|---|
-| `role=storage-node` | `configs/patch-worker-0..3.yaml` |
-| `role=inference-node` | `configs/patch-inference-0.yaml` |
-
-`complete-build/scripts/setup-node-labels.sh` applies them with `kubectl`, so
-clusters built before those patches existed still work. Without the labels the
-Helm install hangs on Pending pods until it times out.
