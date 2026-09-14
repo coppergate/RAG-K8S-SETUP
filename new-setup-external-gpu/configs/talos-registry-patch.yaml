@@ -1,9 +1,25 @@
 machine:
   network:
     extraHostEntries:
+      # Node-level /etc/hosts entries. These OVERRIDE DNS on the node, so each
+      # name must point at the host that actually serves it.
       - ip: 192.168.1.101
         aliases:
           - registry.hierocracy.home
+      # The in-cluster registry (PureLB LoadBalancer, REGISTRY_LB_IP in
+      # config/network.env). A static entry is REQUIRED here, not optional: node
+      # resolv.conf has no cluster DNS, so containerd cannot resolve a
+      # .svc.cluster.local name on its own.
+      #
+      # Until 2026-09-14 this alias was bundled with registry.hierocracy.home
+      # above and therefore resolved to hierophant, which does not host the
+      # locally built service images. Every pull of
+      # registry.container-registry.svc.cluster.local:5000/<svc>:<tag> hit
+      # hierophant and returned "not found" -- observed as build-orchestrator
+      # 2.4.11 in ImagePullBackOff while that exact tag was serving 200 from
+      # 192.168.5.201:5000.
+      - ip: 192.168.5.201
+        aliases:
           - registry.container-registry.svc.cluster.local
   registries:
     mirrors:
