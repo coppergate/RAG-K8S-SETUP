@@ -1,5 +1,48 @@
 # Plan — dual V100 32GB as a multi-tenant inference node
 
+> ## ⛔ STATUS 2026-09-13 — SHELVED. §2 IS DONE; §3 ONWARD IS NOT HAPPENING.
+>
+> **The hardware arrived. The engine swap was declined.** `inference-0` now has
+> two V100 32GB cards and the P4s are gone, but the decision was to **stay on
+> Ollama** rather than migrate the executor to vLLM. Rationale is recorded in
+> `complete-build/documentation/OPERATIONS.md` §4.4.2; in short:
+>
+> 1. **Concurrency is 1** — a single-user coding assistant plus RAG
+>    experimentation. vLLM's decisive advantage is continuous batching under
+>    concurrent load, which does not pay here. This plan's own **open question 6**
+>    had already flagged it.
+> 2. **`sm_70` has no native BF16**, and vLLM's quantised kernels are not
+>    uniformly available for Volta — which is exactly why this plan targeted a
+>    **fork** (1Cat-vLLM) exposing `VLLM_SM70_QUANT_BACKEND` with `marlin` vs
+>    `turbomind` and, by its own admission, **no benchmarked winner**. Resting
+>    the executor on one fork's Volta support is real exposure. GGUF INT4/INT8
+>    via llama.cpp is the well-trodden path on this hardware.
+> 3. **vLLM reserves VRAM statically** (`--gpu-memory-utilization` is
+>    pre-allocated and held), which suits a shared/experimental box poorly.
+> 4. **No NVLink** — see the closed open question 2 below. That kills §3.1's TP2
+>    variant and leaves Ollama's layer-split mode as the better multi-card story
+>    on this exact topology.
+>
+> **What was actually carried out:** §0 (hardware verification) and §2 (retiring
+> the heterogeneous workaround), in full, plus §2.3 **Approach 1** — the
+> `ollama.sh` / values-file conversion to ordinary `nvidia.com/gpu: 1` requests.
+> One consequence worth noting: with `allocatable: 2` the two GPU Ollama pods
+> now land on **separate cards**, where previously both shared one. That was a
+> latent win this plan's §2 unlocked independently of vLLM.
+>
+> **What is not happening:** §3–§8 and §10 (topology, model selection, image
+> build, model seeding, the `llms-vllm` Deployments, cutover). §9's *client*
+> refactor **is still worth doing on its own merits** and is tracked in
+> `complete-build/documentation/VLLM-CLIENT-MIGRATION-PLAN.md` — Ollama 0.15.6
+> serves an OpenAI-compatible `/v1`, so collapsing `rag-worker` to one protocol
+> needs no vLLM and no new hardware.
+>
+> **Retained deliberately.** The VRAM/KV arithmetic (§3, §5.1), the TP2 analysis
+> (§3.1) and the timing tests (§10.2) are the reusable parts — the KV-per-token
+> figures apply to any engine, and T1 (embedding latency) never needed the new
+> node. **Trigger to revisit: concurrency rising above 1, or a measured
+> throughput need Ollama cannot meet — not new hardware.**
+
 Status: **proposal, nothing applied.** Written 2026-09-07, restructured 2026-09-07,
 reviewed for internal consistency 2026-09-07 (VRAM budgets reconciled against the
 serve flags, §9 aligned with the decided client approach, §2/§10 ordering hazard
@@ -1019,13 +1062,29 @@ is in production, not as a target.
 
 ## Open questions blocking a start
 
-1. **Are the P4s physically removed?** If not, §2 is wrong as written.
-2. **Which V100 SKU, and NVLink or PCIe?** (§0.) Sets throughput
-   expectations and whether §3.1 is worth pursuing.
-3. **Driver version vs the CUDA 12.8 floor.** (§0.) Potential reinstall.
-4. **Exact HF repo ids** for the Track A executor AWQ model and the 8B planner.
-5. **Does v1.5.0 support TP2 for the QUASAR NVFP4 target,** or is TP4 a hard
-   gate? (PR #445; DFlash2 PRs #426/#427.) Gates Track B only.
+1. ~~**Are the P4s physically removed?**~~ **CLOSED 2026-09-13 — YES.**
+   `talosctl get pcidevices` and `nvidia-smi` both report exactly two NVIDIA
+   devices: `GV100GL [Tesla PG500-216]` at `05:00.0` and `81:00.0`. No P4, and
+   nothing at `82:00.0`. §2 was applied as written.
+2. ~~**Which V100 SKU, and NVLink or PCIe?**~~ **CLOSED 2026-09-13 — board code
+   `Tesla PG500-216`, 32768 MiB, `compute_cap 7.0`; interconnect is `SYS`, i.e.
+   PCIe PLUS the cross-socket link, NO NVLINK.** GPU0 is on NUMA 0 and GPU1 on
+   NUMA 1. `PG500-216` is a board code, not a marketing name — the driver falls
+   back to it with no SKU string, so nothing on this node ever prints "V100".
+   **This is the answer that most undermines §3.1:** TP2 all-reduces every layer
+   across a cross-socket PCIe hop. Worth reseating both cards under one socket
+   if the chassis allows, regardless of engine.
+3. ~~**Driver version vs the CUDA 12.8 floor.**~~ **CLOSED 2026-09-13 — driver
+   `580.126.16`, far above the R570 practical floor.** No reinstall, no new
+   Image Factory schematic needed. Moot for vLLM now, but it also means the
+   node is ready if the decision is ever revisited.
+4. ~~**Exact HF repo ids** for the Track A executor AWQ model and the 8B planner.~~
+   **MOOT 2026-09-13** — no vLLM deployment. Reopen only with the engine
+   decision.
+5. ~~**Does v1.5.0 support TP2 for the QUASAR NVFP4 target,** or is TP4 a hard
+   gate?~~ **MOOT 2026-09-13** — Track B was gated on Track A serving, which is
+   not happening. (Also note NVFP4 is a Blackwell-era format; it was always the
+   least plausible part of this plan on `sm_70`.)
 6. **Is the workload really single-stream?** The current config says yes
    (`OLLAMA_NUM_PARALLEL=1`, `max_num_seqs=1`). If concurrency is expected to
    rise, revisit §3.1 — at high concurrency two independent TP1 replicas beat
@@ -1035,15 +1094,23 @@ is in production, not as a target.
    GPU endpoint would be no faster and possibly slower while spending VRAM and
    SM time card 1 needs. The equivalence question only reopens if §9.1's four
    preconditions are met.
-8. **Which §2.3 resolution?** Approach 1 (bring the `ollama.sh` pinning removal
-   forward, so Ollama requests `nvidia.com/gpu: 1` properly) or Approach 2 (keep
-   `gpu-v100-uuid` until §10 finishes). Approach 1 is preferred and also makes
-   Ollama and vLLM safely co-resident. **Answer before starting §2** — it
-   changes what §2.2 does.
-9. **One image or two?** (§6.) The `gpu-small-models` container needs only
-   `torch` + `sentence-transformers` for the reranker, but its planner process
-   needs the vLLM wheel. One combined image is simpler to maintain; two are
-   smaller and decouple rebuilds.
+8. ~~**Which §2.3 resolution?**~~ **CLOSED 2026-09-13 — Approach 1, implemented.**
+   The UUID-resolve block and `ollama-gpu-pin-v100` ConfigMap are deleted from
+   `ollama.sh`; both values files set `ollama.gpu.enabled: true` with
+   `number: 1` and no `extraEnvFrom`. Verified with `helm template`: each
+   Deployment renders `limits: {nvidia.com/gpu: 1}`, `runtimeClassName: nvidia`,
+   and no `envFrom`. Approach 2's only advantage was leaving the Ollama install
+   path untouched, which is worthless once Ollama is the steady state rather
+   than a rollback.
+9. ~~**One image or two?** (§6.)~~ **MOOT 2026-09-13** — no vLLM image is being
+   built.
+
+10. **New, and still open: does the stack want a reranker?** It was the largest
+    retrieval-quality gain per GB in this plan (~1.5 GB for BGE-reranker-v2-m3)
+    and it is **not vLLM-dependent** — it is a `sentence-transformers` model. It
+    does need a new client type and a new pipeline stage between the Qdrant
+    search and the executor, behind a feature flag. Worth its own plan now that
+    this one is shelved; there is ample VRAM headroom on both cards.
 
 ---
 

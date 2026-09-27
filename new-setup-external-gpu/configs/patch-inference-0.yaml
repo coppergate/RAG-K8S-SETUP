@@ -86,6 +86,10 @@ machine:
     # Selected by complete-build/infrastructure/nvidia-operator.sh: 'gpu' for the device plugin, GFD,
     # DCGM exporter and the Talos validation-fix DaemonSet; 'role' for the
     # node-feature-discovery worker.
+    #
+    # Both are NODE IDENTITY, not discovered inventory, and both must exist
+    # BEFORE the operator runs — keep them here. nvidia-operator.sh re-asserts
+    # them idempotently so it remains sufficient on its own.
     gpu: "true"
     role: inference-node
     #
@@ -95,12 +99,16 @@ machine:
     #
     # Two reasons, beyond just ending the duplication:
     #
-    # 1. These UUIDs are DISCOVERED facts, not configuration. Declaring them in
-    #    the machine config means Talos re-asserts whatever was written here on
-    #    every config apply. nvidia-operator.sh probes the live card and writes
-    #    what it finds, so if a GPU is reseated or replaced the two sources
-    #    disagree and Talos wins — silently repinning every workload to a UUID
-    #    that no longer exists.
+    # 1. Inventory is a DISCOVERED fact, not configuration. Declaring it in the
+    #    machine config means Talos re-asserts whatever was written here on
+    #    every config apply. nvidia-operator.sh probes the live node and writes
+    #    what it finds, so a reseated or replaced GPU cannot leave the two
+    #    sources disagreeing with Talos winning.
+    #
+    #    This was not hypothetical: the node was rebuilt on 2026-09-13 with two
+    #    V100 32GB cards replacing 1x V100 + 2x P4. Had the per-card UUIDs still
+    #    been declared here, Talos would have kept re-asserting UUIDs for cards
+    #    that are no longer seated.
     #
     # 2. One of them was simply wrong. 'gpu-labels-describe: tesla-v100-32gb'
     #    asserted that GFD's nvidia.com/gpu.* labels describe the V100. Observed
@@ -108,6 +116,19 @@ machine:
     #    reporting product=Tesla-P4 / memory=7680 / compute 6.1 instead. The
     #    label is not re-created anywhere: an unverifiable claim is worse than
     #    no label.
+    #
+    # NOTE 2026-09-13: there are no per-card UUID labels at all now. The pool is
+    # two identical V100 32GB cards, so workloads request 'nvidia.com/gpu: 1'
+    # normally and the scheduler allocates. nvidia-operator.sh publishes only a
+    # measured inventory (gpu-total-count, gpu-32gb-count, gpu-inventory-rev)
+    # and actively UNSETS the old gpu-p4-*, gpu-heterogeneous, gpu-pool-mixed
+    # and gpu-*-uuid labels, because dropping a label from a script does not
+    # remove it from a live Node.
+    #
+    # No 'machine.install.extraKernelArgs: vfio-pci.ids=10de:1bb3' was ever
+    # applied here (it would have hidden the P4s from the driver). It was
+    # documented as untested and is meaningless now the P4s are gone. Do not
+    # add it.
     #
     # 'gpu' and 'role' above are kept here deliberately. They are node identity
     # rather than discovered inventory, and they must exist before the operator
