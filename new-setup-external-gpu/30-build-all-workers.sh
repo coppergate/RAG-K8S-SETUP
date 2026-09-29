@@ -66,9 +66,38 @@ NVME_OSD_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362996-pa
 # Worker-3 NVMe fast-tier OSD: 195GB partition on nvme-362935-part2, co-located with worker-3's OS.
 WORKER_3_NVME_OSD="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362935-part2"
 
-# CPU pinning: workers 0-2 on NUMA 1 (NVMe drives), worker-3 on NUMA 0 (former inference node).
-# CPUs 26-27 reserved for host on NUMA 1; CPUs 40-41 reserved for host on NUMA 0.
-WORKER_CPUSETS=("14-17,42-45" "18-21,46-49" "22-25,50-53" "0-13")
+# CPU pinning: workers 0-2 on NUMA 1 (NVMe drives), worker-3 on NUMA 0.
+#
+# Sibling offset is 28 on this host (2x E5-2680 v4, 14c/socket, 2 threads):
+# CPU n and CPU n+28 are the SAME physical core.
+#   NUMA 0 = cores 0-13  -> CPUs 0-13  + 28-41
+#   NUMA 1 = cores 14-27 -> CPUs 14-27 + 42-55
+#
+# worker-3 CHANGED 2026-09-29: "0-13" -> "0-7,28-35".
+#
+# "0-13" was thread 0 of all fourteen NUMA 0 cores, and the control planes held
+# 28-39 -- thread 1 of cores 0-11. So worker-3 shared a physical core with a
+# control plane on TWELVE of its FOURTEEN cores. worker-3 is the heaviest node
+# in the cluster (measured 6347m, 54% of it Ceph: it carries two OSDs plus the
+# active mgr), and that load was landing on etcd's execution units. All three
+# kube-controller-managers and all three kube-schedulers were crash-looping on
+# "leaderelection lost", ~380-412 restarts each. See 10-build-control-plane.sh
+# for the full diagnosis and complete-build OPERATIONS.md 1.10 for the mechanism.
+#
+# "0-7,28-35" gives worker-3 EIGHT WHOLE CORES -- both threads of each, 16 host
+# threads for its 14 vCPUs -- shared with nothing. Fewer physical cores than
+# before (8 vs 14), but they are uncontended, and 6347m against 8 dedicated
+# cores is ~79%. Cores 8-13 go to the control planes.
+#
+# Workers 0-2 are UNCHANGED at 4 cores each. An earlier draft cut them to 2 to
+# make room for all three control planes on NUMA 1; rejected because Kaniko
+# build jobs (cpu request 2 / limit 4) are scheduled onto role=storage-node and
+# that would throttle the build pipeline. They measure ~1.1 core each, so 4
+# cores stays generous.
+#
+# Host reservation: 26-27 (+54-55) on NUMA 1. The former NUMA 0 reservation
+# (40-41) is now control-2.
+WORKER_CPUSETS=("14-17,42-45" "18-21,46-49" "22-25,50-53" "0-7,28-35")
 WORKER_RAMS=(28672 28672 28672 65536)
 WORKER_VCPUS=(8 8 8 14)
 
