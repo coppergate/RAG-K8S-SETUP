@@ -58,9 +58,14 @@ CONTROL_2_DISK="/dev/disk/by-id/nvme-Netac_NVMe_SSD_250GB_AA20250805250G362984-p
 #   control-2  cores 12,13   CPUs 12,13,40,41
 #   worker-3   cores  0-7    CPUs 0-7,28-35   (see 30-build-all-workers.sh)
 #
-# Their 4 vCPUs now map 1:1 onto 4 uncontended threads. Measured demand is
-# 1388m / 1411m / 2355m, so 2 dedicated cores each is strictly more capacity
-# than they were actually getting before.
+# Each holds 4 vCPUs over 4 host threads (2 cores x 2 threads). Note that is a
+# matching COUNT, not an exclusive one-to-one pin: --cpuset, and `virsh vcpupin`
+# given the same list per vCPU, set an affinity MASK, so the 4 vCPUs float
+# across those 4 threads and the host scheduler places them. What matters is
+# that nothing outside the VM is in the mask. Measured demand is 1388m / 1411m
+# / 2355m, so 2 dedicated cores each is strictly more capacity than they were
+# actually getting before, when every one of those threads had a busy worker-3
+# vCPU on its sibling.
 #
 # NUMA 1 IS DELIBERATELY UNTOUCHED. An earlier draft moved all three control
 # planes there and cut workers 0-2 to 2 cores apiece. Rejected: Kaniko build
